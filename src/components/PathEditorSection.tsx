@@ -1,4 +1,4 @@
-import { MapPin, PenTool, Download, Upload, Copy, Minimize2, Minus } from 'lucide-react';
+import { MapPin, PenTool, Minimize2, Minus } from 'lucide-react';
 import { Button } from './ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
 
@@ -12,25 +12,20 @@ interface PathEditorSectionProps {
   isEditingCustomRoute: boolean;
   customRoutePaths: Record<string, Array<{x: number, y: number}>>;
   handleStartCustomRoute: () => void;
+  handleEditCustomRoute: (routeKey: string) => void;
   handleSaveCustomRoute: () => void;
   handleCancelCustomRoute: () => void;
   handleDeleteCustomRoute: (routeKey: string) => void;
-  setPathPoints: (points: Array<{x: number, y: number}>) => void;
+  handleClearAllCustomRoutes: () => void;
+  setPathPoints: (points: Array<{x: number, y: number; locationId?: string}>) => void;
   setIsEditingCustomRoute: (value: boolean) => void;
   setIsDrawingMode: (value: boolean) => void;
-  savedPaths: Array<{name: string, points: Array<{x: number, y: number}>}>;
-  handleStartDrawing: () => void;
   isDrawingMode: boolean;
-  handleExportPaths: () => void;
-  handleImportPaths: () => void;
-  handleCopyToClipboard: () => void;
-  handleClearAllPaths: () => void;
-  setSavedPaths: (paths: Array<{name: string, points: Array<{x: number, y: number}>}>) => void;
   handleStraightenPath: () => void;
   handleStraightenAllLines: () => void;
   autoStraighten: boolean;
   setAutoStraighten: (value: boolean) => void;
-  pathPoints: Array<{x: number, y: number}>;
+  pathPoints: Array<{x: number, y: number; locationId?: string}>;
 }
 
 export function PathEditorSection({
@@ -46,17 +41,12 @@ export function PathEditorSection({
   handleSaveCustomRoute,
   handleCancelCustomRoute,
   handleDeleteCustomRoute,
+  handleClearAllCustomRoutes,
   setPathPoints,
   setIsEditingCustomRoute,
   setIsDrawingMode,
-  savedPaths,
-  handleStartDrawing,
+  handleEditCustomRoute,
   isDrawingMode,
-  handleExportPaths,
-  handleImportPaths,
-  handleCopyToClipboard,
-  handleClearAllPaths,
-  setSavedPaths,
   handleStraightenPath,
   handleStraightenAllLines,
   autoStraighten,
@@ -190,9 +180,19 @@ export function PathEditorSection({
         {/* Saved Custom Routes List */}
         {Object.keys(customRoutePaths).length > 0 && (
           <div className={`mb-6 p-6 rounded-xl ${darkMode ? 'bg-[#1E293B]' : 'bg-gray-50'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-            <h3 className={`text-lg mb-4 ${darkMode ? 'text-white' : 'text-[#001C38]'}`}>
-              Saved Custom Routes ({Object.keys(customRoutePaths).length})
-            </h3>
+            <div className="flex items-center justify-between mb-4">
+              <h3 className={`text-lg ${darkMode ? 'text-white' : 'text-[#001C38]'}`}>
+                Saved Custom Routes ({Object.keys(customRoutePaths).length})
+              </h3>
+              <Button
+                onClick={handleClearAllCustomRoutes}
+                variant="ghost"
+                size="sm"
+                className="text-red-500 hover:text-red-700 hover:bg-red-500/10"
+              >
+                Clear All
+              </Button>
+            </div>
             <div className="space-y-2 max-h-60 overflow-y-auto">
               {Object.entries(customRoutePaths).map(([routeKey, points]) => (
                 <div
@@ -211,12 +211,7 @@ export function PathEditorSection({
                   <div className="flex gap-2">
                     <Button
                       onClick={() => {
-                        const [from, to] = routeKey.split('→');
-                        setPathEditorFrom(from);
-                        setPathEditorTo(to);
-                        setPathPoints([...points]);
-                        setIsEditingCustomRoute(true);
-                        setIsDrawingMode(true);
+                        handleEditCustomRoute(routeKey);
                       }}
                       variant="ghost"
                       size="sm"
@@ -239,107 +234,6 @@ export function PathEditorSection({
           </div>
         )}
 
-        <div className="h-px bg-gradient-to-r from-transparent via-gray-600 to-transparent my-6"></div>
-
-        {/* Legacy Path Drawing */}
-        <h3 className={`text-lg mb-4 ${darkMode ? 'text-white' : 'text-[#001C38]'}`}>
-          General Path Drawing
-        </h3>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
-          <Button
-            onClick={handleStartDrawing}
-            disabled={isDrawingMode}
-            className={`h-14 rounded-xl ${darkMode ? 'bg-[#C5D4E8] hover:bg-[#B5C4D8] text-gray-800' : 'bg-[#003566] hover:bg-[#002347] text-white'}`}
-          >
-            <PenTool size={18} className="mr-2" />
-            {isDrawingMode ? 'Drawing Active...' : 'Draw Free Path'}
-          </Button>
-          <Button
-            disabled
-            className={`h-14 rounded-xl ${darkMode ? 'bg-[#C5D4E8] hover:bg-[#B5C4D8] text-gray-800' : 'bg-[#003566] hover:bg-[#002347] text-white'} opacity-50 cursor-not-allowed`}
-          >
-            <PenTool size={18} className="mr-2" />
-            (Reserved)
-          </Button>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Button
-            onClick={handleImportPaths}
-            variant="outline"
-            className={`h-12 rounded-xl ${darkMode ? 'border-gray-600 text-gray-300 hover:bg-[#3d4858]' : 'border-[#E6A13A] text-[#E6A13A] hover:bg-[#E6A13A]/10'}`}
-          >
-            <Upload size={18} className="mr-2" />
-            Import Paths
-          </Button>
-          <Button
-            onClick={handleExportPaths}
-            disabled={savedPaths.length === 0}
-            variant="outline"
-            className={`h-12 rounded-xl ${darkMode ? 'border-gray-600 text-gray-300 hover:bg-[#3d4858]' : 'border-[#E6A13A] text-[#E6A13A] hover:bg-[#E6A13A]/10'}`}
-          >
-            <Download size={18} className="mr-2" />
-            Export Paths
-          </Button>
-          <Button
-            onClick={handleCopyToClipboard}
-            disabled={savedPaths.length === 0}
-            variant="outline"
-            className={`h-12 rounded-xl ${darkMode ? 'border-gray-600 text-gray-300 hover:bg-[#3d4858]' : 'border-[#E6A13A] text-[#E6A13A] hover:bg-[#E6A13A]/10'}`}
-          >
-            <Copy size={18} className="mr-2" />
-            Copy for Default Paths
-          </Button>
-        </div>
-
-        {/* Saved Paths List */}
-        {savedPaths.length > 0 && (
-          <div className="mt-6">
-            <h3 className={`${darkMode ? 'text-white' : 'text-[#001C38]'} mb-3`}>
-              Saved Paths ({savedPaths.length})
-            </h3>
-            <div className="space-y-2 max-h-48 overflow-y-auto">
-              {savedPaths.map((path, index) => (
-                <div
-                  key={index}
-                  className={`flex items-center justify-between p-3 rounded-lg ${darkMode ? 'bg-[#3d4858]' : 'bg-gray-100'}`}
-                >
-                  <div className="flex items-center gap-3">
-                    <MapPin size={16} className="text-[#E6A13A]" />
-                    <span className={`${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {path.name}
-                    </span>
-                    <span className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      ({path.points.length} points)
-                    </span>
-                  </div>
-                  <Button
-                    onClick={() => {
-                      if (confirm(`Delete path "${path.name}"?`)) {
-                        setSavedPaths(savedPaths.filter((_, i) => i !== index));
-                      }
-                    }}
-                    variant="ghost"
-                    size="sm"
-                    className="text-red-500 hover:text-red-700"
-                  >
-                    Delete
-                  </Button>
-                </div>
-              ))}
-            </div>
-            <div className="mt-4">
-              <Button
-                onClick={handleClearAllPaths}
-                variant="outline"
-                className={`h-12 rounded-xl ${darkMode ? 'border-gray-600 text-gray-300 hover:bg-[#3d4858]' : 'border-[#E6A13A] text-[#E6A13A] hover:bg-[#E6A13A]/10'}`}
-              >
-                <Copy size={18} className="mr-2" />
-                Clear All Paths
-              </Button>
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
