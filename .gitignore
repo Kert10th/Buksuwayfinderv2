@@ -1,0 +1,16 @@
+node_modules
+dist
+.vite
+.DS_Store
+*.log
+
+# Editor / AI tool metadata
+.claude/
+.cursor/
+.vscode/
+.idea/
+
+# Environment
+.env
+.env.local
+.env.*.local

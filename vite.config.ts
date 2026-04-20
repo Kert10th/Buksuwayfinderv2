@@ -19,6 +19,7 @@
         'input-otp@1.4.2': 'input-otp',
         'figma:asset/e5fb6b875fbf55e134b7bd3bf4b627c0c2393367.png': path.resolve(__dirname, './src/assets/e5fb6b875fbf55e134b7bd3bf4b627c0c2393367.png'),
         'figma:asset/ad79c902008889d530fa079e604bbbff75cd2be3.png': path.resolve(__dirname, './src/assets/ad79c902008889d530fa079e604bbbff75cd2be3.png'),
+        'figma:asset/buksu-campus-map-main.png': path.resolve(__dirname, './src/assets/buksu-campus-map-main.png'),
         'embla-carousel-react@8.6.0': 'embla-carousel-react',
         'cmdk@1.1.1': 'cmdk',
         'class-variance-authority@0.7.1': 'class-variance-authority',

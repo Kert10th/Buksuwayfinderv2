@@ -182,8 +182,8 @@ export function PathEditorSection({
           <div className={`mb-6 p-6 rounded-xl ${darkMode ? 'bg-[#1E293B]' : 'bg-gray-50'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
             <div className="flex items-center justify-between mb-4">
               <h3 className={`text-lg ${darkMode ? 'text-white' : 'text-[#001C38]'}`}>
-                Saved Custom Routes ({Object.keys(customRoutePaths).length})
-              </h3>
+              Saved Custom Routes ({Object.keys(customRoutePaths).length})
+            </h3>
               <Button
                 onClick={handleClearAllCustomRoutes}
                 variant="ghost"
