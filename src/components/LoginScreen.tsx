@@ -139,7 +139,13 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       {/* Main Content */}
       <div className="relative z-10 flex flex-col items-center text-center px-4 w-full max-w-4xl flex-1 justify-center">
         {/* Logo */}
-        <div style={{ marginBottom: 'clamp(1.5rem, 3vh, 3rem)' }}>
+        <div
+          className="landing-fade-in"
+          style={{
+            marginBottom: 'clamp(1.5rem, 3vh, 3rem)',
+            animationDelay: '0ms',
+          }}
+        >
           <img
             src="/wayfinder-logo.png"
             alt="BukSU Wayfinder Logo"
@@ -154,60 +160,35 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
 
         {/* Welcome Title */}
         <h1
-          className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] font-extrabold tracking-tight leading-tight mb-2"
+          className="landing-fade-in font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] font-extrabold tracking-tight leading-tight mb-3"
           style={{
-            color: '#C0C0C0',
+            color: '#F5F5F5',
             fontSize: 'clamp(1.75rem, 5vw, 5rem)',
+            animationDelay: '180ms',
           }}
         >
           <span style={{ display: 'block' }}>Welcome to</span>
           <span style={{ display: 'block' }}>Bukidnon State University</span>
         </h1>
 
-        {/* Wayfinder System */}
+        {/* BukSU official motto - single gold accent, refined tracking */}
         <p
-          className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] mb-6 font-semibold"
+          className="landing-fade-in font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] mt-3 font-semibold uppercase"
           style={{
-            background: 'linear-gradient(to right, #FFD700, #FFA500, #FFD700)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            backgroundClip: 'text',
-            fontSize: 'clamp(1rem, 2.2vw, 2.25rem)',
+            color: '#E6A13A',
+            letterSpacing: '0.25em',
+            fontSize: 'clamp(0.85rem, 1.5vw, 1.35rem)',
+            animationDelay: '360ms',
           }}
         >
-          Wayfinder System
-        </p>
-
-        {/* Subtitle */}
-        <p
-          className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] mt-2 font-semibold tracking-tight"
-          style={{
-            color: '#D3D3D3',
-            fontSize: 'clamp(1.25rem, 3vw, 2.75rem)',
-          }}
-        >
-          EDUCATE. INNOVATE. LEAD.
-        </p>
-
-        {/* Motto */}
-        <p
-          className="mt-4 font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] font-medium"
-          style={{
-            background: 'linear-gradient(to right, #FFD700, #FFA500, #FFD700)',
-            WebkitBackgroundClip: 'text',
-            WebkitTextFillColor: 'transparent',
-            backgroundClip: 'text',
-            fontSize: 'clamp(1.125rem, 2.5vw, 2.25rem)',
-          }}
-        >
-          Smart Guidance. Seamless Journey.
+          Educate · Innovate · Lead
         </p>
 
         {/* Action Buttons */}
         {!showAdminForm ? (
           <div
-            className="w-full flex justify-center"
-            style={{ marginTop: 'clamp(4rem, 9vh, 10rem)' }}
+            className="landing-fade-in w-full flex justify-center"
+            style={{ marginTop: 'clamp(4rem, 9vh, 10rem)', animationDelay: '540ms' }}
           >
             {/* Start Wayfinding Button - large, clean CTA */}
             <button
@@ -328,6 +309,23 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
             opacity: 1;
             transform: translateY(0);
           }
+        }
+
+        /* Landing-page entrance: elements lift + fade in on load.
+           Each element sets its own animation-delay inline for a staggered feel. */
+        @keyframes landingRiseIn {
+          from {
+            opacity: 0;
+            transform: translateY(16px);
+          }
+          to {
+            opacity: 1;
+            transform: translateY(0);
+          }
+        }
+        .landing-fade-in {
+          opacity: 0;
+          animation: landingRiseIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
         }
       `}</style>
     </div>
