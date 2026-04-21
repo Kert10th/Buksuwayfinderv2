@@ -16,6 +16,9 @@ const PUBLIC_MAP_PATH = '/campus-map.png';
 // import { mapStorage } from '../utils/storage';
 // import { calculateDistance, normalizeRouteKey, buildAdjacencyList, findPath, type MapNode, type Edge, type Point } from '../utils/pathfinding';
 // import { useMapData } from '../hooks/useMapData';
+import { fetchCloudData, uploadCloudData, isCloudSyncConfigured } from '../utils/cloudSync';
+
+const CLOUD_LAST_PULLED_KEY = 'buksu-cloud-last-pulled';
 
 // Facility type categories
 type FacilityType = 'default' | 'comfort-room' | 'parking-4w' | 'parking-2w' | 'emergency';
@@ -777,16 +780,87 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     console.log('✅ All location markers cleared. Default nodes will not auto-load.');
   };
 
+  // Build the canonical backup payload used by: Export Backup, Sync to Cloud.
+  // Single source of truth for the wayfinder JSON shape.
+  const buildBackupPayload = () => ({
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    nodes: mapData.nodes,
+    customRoutes: mapData.customRoutes,
+    edges: mapData.edges,
+  });
+
+  // Validate + apply a parsed backup object to local state. Used by: Import
+  // file, Pull Latest from cloud, boot-time cloud hydration.
+  // If `requireConfirm` is true, prompts the user before replacing data.
+  // Returns true on success, false on cancel/invalid.
+  const applyBackup = (
+    parsed: unknown,
+    options: { requireConfirm?: boolean; silent?: boolean } = {},
+  ): boolean => {
+    const { requireConfirm = false, silent = false } = options;
+    try {
+      if (!parsed || typeof parsed !== 'object') throw new Error('Invalid payload');
+      const obj = parsed as Record<string, unknown>;
+      const nextNodes =
+        obj.nodes && typeof obj.nodes === 'object'
+          ? (obj.nodes as Record<string, MapNode>)
+          : null;
+      const nextRoutes =
+        obj.customRoutes && typeof obj.customRoutes === 'object'
+          ? (obj.customRoutes as Record<string, Array<{ x: number; y: number }>>)
+          : null;
+      const nextEdges = Array.isArray(obj.edges)
+        ? (obj.edges as Array<{ from: string; to: string }>)
+        : null;
+      if (!nextNodes && !nextRoutes && !nextEdges) {
+        throw new Error('Payload does not contain recognizable wayfinder data');
+      }
+      const nodeCount = nextNodes ? Object.keys(nextNodes).length : 0;
+      const routeCount = nextRoutes ? Object.keys(nextRoutes).length : 0;
+      const edgeCount = nextEdges ? nextEdges.length : 0;
+
+      if (requireConfirm) {
+        const confirmed = window.confirm(
+          `Apply this backup?\n\n` +
+            `• ${nodeCount} locations\n` +
+            `• ${routeCount} custom routes\n` +
+            `• ${edgeCount} edges\n\n` +
+            `This will REPLACE all current data.`,
+        );
+        if (!confirmed) return false;
+      }
+
+      setMapData((prev) => ({
+        nodes: nextNodes ?? prev.nodes,
+        customRoutes: nextRoutes ?? prev.customRoutes,
+        edges: nextEdges ?? prev.edges,
+      }));
+      localStorage.removeItem('buksu-skip-defaults');
+
+      if (!silent) {
+        toast.success('Backup applied', {
+          description: `${nodeCount} locations · ${routeCount} routes · ${edgeCount} edges restored`,
+          duration: 3000,
+        });
+      }
+      return true;
+    } catch (err) {
+      console.error('applyBackup failed:', err);
+      if (!silent) {
+        toast.error('Could not apply backup', {
+          description: err instanceof Error ? err.message : 'Unknown error.',
+          duration: 3000,
+        });
+      }
+      return false;
+    }
+  };
+
   // Export all map data (nodes + custom routes + edges) as a JSON file.
   // Admins can back this up and re-import on another device / after a reset.
   const handleExportData = () => {
-    const payload = {
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      nodes: mapData.nodes,
-      customRoutes: mapData.customRoutes,
-      edges: mapData.edges,
-    };
+    const payload = buildBackupPayload();
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -803,42 +877,14 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     });
   };
 
-  // Import a previously-exported JSON backup. Replaces all current data after
-  // an explicit confirm so nothing is silently overwritten.
+  // Import a previously-exported JSON backup file. Replaces all current data
+  // after an explicit confirm so nothing is silently overwritten.
   const handleImportData = (file: File) => {
     const reader = new FileReader();
     reader.onload = () => {
       try {
         const parsed = JSON.parse(String(reader.result));
-        if (!parsed || typeof parsed !== 'object') throw new Error('Invalid file');
-        const nextNodes = parsed.nodes && typeof parsed.nodes === 'object' ? parsed.nodes : null;
-        const nextRoutes = parsed.customRoutes && typeof parsed.customRoutes === 'object' ? parsed.customRoutes : null;
-        const nextEdges = Array.isArray(parsed.edges) ? parsed.edges : null;
-        if (!nextNodes && !nextRoutes && !nextEdges) {
-          throw new Error('File does not contain recognizable wayfinder data');
-        }
-        const nodeCount = nextNodes ? Object.keys(nextNodes).length : 0;
-        const routeCount = nextRoutes ? Object.keys(nextRoutes).length : 0;
-        const edgeCount = nextEdges ? nextEdges.length : 0;
-        const confirmed = window.confirm(
-          `Import this backup?\n\n` +
-          `• ${nodeCount} locations\n` +
-          `• ${routeCount} custom routes\n` +
-          `• ${edgeCount} edges\n\n` +
-          `This will REPLACE all current data.`
-        );
-        if (!confirmed) return;
-        setMapData((prev) => ({
-          nodes: nextNodes ?? prev.nodes,
-          customRoutes: nextRoutes ?? prev.customRoutes,
-          edges: nextEdges ?? prev.edges,
-        }));
-        // Make sure the "skip defaults" flag is cleared so imports aren't overridden
-        localStorage.removeItem('buksu-skip-defaults');
-        toast.success('Backup imported', {
-          description: `${nodeCount} locations · ${routeCount} routes · ${edgeCount} edges restored`,
-          duration: 3000,
-        });
+        applyBackup(parsed, { requireConfirm: true });
       } catch (err) {
         console.error('Import failed:', err);
         toast.error('Import failed', {
@@ -849,6 +895,107 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     };
     reader.readAsText(file);
   };
+
+  // ---------------- Cloud sync (Cloudflare R2) ----------------
+
+  // Timestamp of the last successful cloud pull (ISO string, or null).
+  // Persisted to localStorage so the "Last pulled" label survives reloads.
+  const [lastCloudPull, setLastCloudPull] = useState<string | null>(() => {
+    try {
+      return localStorage.getItem(CLOUD_LAST_PULLED_KEY);
+    } catch {
+      return null;
+    }
+  });
+  const [isCloudBusy, setIsCloudBusy] = useState<false | 'pulling' | 'pushing'>(false);
+
+  // Boot-time hydration: on first mount (if cloud is configured), try to
+  // fetch the authoritative JSON and apply it silently. Offline failures are
+  // swallowed so the kiosk always boots from localStorage as a fallback.
+  useEffect(() => {
+    if (!isCloudSyncConfigured()) return;
+    let cancelled = false;
+    (async () => {
+      const data = await fetchCloudData();
+      if (cancelled || !data) return;
+      const applied = applyBackup(data, { silent: true });
+      if (applied) {
+        const now = new Date().toISOString();
+        localStorage.setItem(CLOUD_LAST_PULLED_KEY, now);
+        setLastCloudPull(now);
+        console.log('✅ Hydrated from cloud on boot');
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // run once on mount
+
+  // Admin: push current state to the cloud.
+  const handleSyncToCloud = async () => {
+    if (!isCloudSyncConfigured()) {
+      toast.error('Cloud sync not configured', {
+        description: 'Add R2 credentials to .env.local and reload.',
+        duration: 3500,
+      });
+      return;
+    }
+    setIsCloudBusy('pushing');
+    const ok = await uploadCloudData(buildBackupPayload());
+    setIsCloudBusy(false);
+    if (ok) {
+      toast.success('Synced to cloud', {
+        description: `Kiosks will pick up changes on next reload.`,
+        duration: 2500,
+      });
+    } else {
+      toast.error('Cloud upload failed', {
+        description: 'Check your network + R2 credentials.',
+        duration: 3500,
+      });
+    }
+  };
+
+  // Admin: pull latest state from the cloud, confirming before overwriting.
+  const handlePullLatest = async () => {
+    if (!isCloudSyncConfigured()) {
+      toast.error('Cloud sync not configured', {
+        description: 'Add R2 credentials to .env.local and reload.',
+        duration: 3500,
+      });
+      return;
+    }
+    setIsCloudBusy('pulling');
+    const data = await fetchCloudData();
+    setIsCloudBusy(false);
+    if (!data) {
+      toast.error('Could not reach cloud', {
+        description: 'Offline, or the R2 object is missing.',
+        duration: 3500,
+      });
+      return;
+    }
+    const applied = applyBackup(data, { requireConfirm: true });
+    if (applied) {
+      const now = new Date().toISOString();
+      localStorage.setItem(CLOUD_LAST_PULLED_KEY, now);
+      setLastCloudPull(now);
+    }
+  };
+
+  // Format "2025-04-21T12:34:56Z" -> "5 min ago" / "2 hr ago" / "Apr 20".
+  const formatRelativeTime = (iso: string | null): string => {
+    if (!iso) return 'never';
+    const then = new Date(iso).getTime();
+    const diffSec = Math.max(0, Math.floor((Date.now() - then) / 1000));
+    if (diffSec < 60) return 'just now';
+    if (diffSec < 3600) return `${Math.floor(diffSec / 60)} min ago`;
+    if (diffSec < 86400) return `${Math.floor(diffSec / 3600)} hr ago`;
+    return new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  };
+
+  // ---------------- /Cloud sync ----------------
 
   // Save edges to localStorage whenever they change
   useEffect(() => {
@@ -1908,31 +2055,39 @@ const [pathEditorTo, setPathEditorTo] = useState('');
       });
       return;
     }
-    
+
     const routeKey = normalizeRouteKey(pathEditorFrom, pathEditorTo);
     // Convert PathPoint[] to {x, y}[] for storage
     const waypoints = pathPoints.map(p => ({ x: p.x, y: p.y }));
-    
+
+    // Anchor the route to the actual FROM/TO pins so the drawn path visually
+    // connects to the green/red markers instead of floating a few units away
+    // from them. Uses node coordinates if the locations exist in mapNodes.
+    const fromPin = mapNodes[pathEditorFrom]?.coordinates;
+    const toPin = mapNodes[pathEditorTo]?.coordinates;
+    if (fromPin) waypoints[0] = { x: fromPin.x, y: fromPin.y };
+    if (toPin) waypoints[waypoints.length - 1] = { x: toPin.x, y: toPin.y };
+
     setCustomRoutePaths(prev => ({
       ...prev,
       [routeKey]: waypoints
     }));
-    
-    console.log('✅ Saved custom route:', routeKey, 'with', waypoints.length, 'points');
-    
+
+    console.log('✅ Saved custom route:', routeKey, 'with', waypoints.length, 'points (snapped to pins)');
+
     // Show success toast
     toast.success('Route saved!', {
-      description: `Custom route from ${pathEditorFrom} to ${pathEditorTo} with ${waypoints.length} waypoints`,
+      description: `Custom route from ${pathEditorFrom} to ${pathEditorTo} with ${waypoints.length} waypoints. Snapped to start & end pins.`,
       duration: 3000,
     });
-    
+
     // Reset drawing state
     setIsDrawingMode(false);
     setPathPoints([]);
     setLastDrawnPoint(null);
     setPathEditorFrom('');
     setPathEditorTo('');
-    
+
     // If route is currently shown, refresh it
     if (showRoute) {
       setShowRoute(false);
@@ -3507,27 +3662,27 @@ const [pathEditorTo, setPathEditorTo] = useState('');
             )}
         </div>
 
-        {/* Location Marker Editor - Admin Only */}
+        {/* Panel A: Quick Add Facility Markers (Stamp Mode) - Admin Only */}
         {isAdmin && (
           <div className="p-[2px] bg-gradient-to-r from-[#001C38] via-[#003566] to-[#E6A13A] rounded-2xl shadow-lg">
             <div className={`${darkMode ? 'bg-[#2D3748]' : 'bg-white'} rounded-2xl p-8`}>
             <div className="flex items-center gap-3 mb-4">
               <div className={`w-10 h-10 rounded-lg ${darkMode ? 'bg-[#3d4858]' : 'bg-[#003566]/10'} flex items-center justify-center`}>
-                <MapPin size={20} className={darkMode ? 'text-gray-400' : 'text-[#003566]'} />
+                <Layers size={20} className={darkMode ? 'text-[#E6A13A]' : 'text-[#E6A13A]'} />
               </div>
               <h2 className={`font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] text-xl ${darkMode ? 'text-white' : 'text-[#001C38]'}`}>
-                Location Marker Editor
+                Quick Add Facility Markers
               </h2>
             </div>
-            
+
             <p className={`mb-6 ${darkMode ? 'text-gray-400' : 'text-[#003566]'}`}>
-              Set the exact coordinates for starting and ending points of each location.
+              Drop new comfort rooms, parking, or emergency markers by selecting a stamp and clicking on the map.
             </p>
 
             {/* Quick Add Tools (Stamp Mode) */}
-            <div className="mb-6">
+            <div>
               <h3 className={`text-sm font-semibold mb-3 ${darkMode ? 'text-gray-300' : 'text-[#003566]'}`}>
-                Quick Add Tools
+                Stamp Mode
               </h3>
               <div className="flex flex-wrap gap-2">
                 <Button
@@ -3626,6 +3781,26 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                 </p>
               )}
             </div>
+            </div>
+          </div>
+        )}
+
+        {/* Panel B: Edit Location Positions - Admin Only */}
+        {isAdmin && (
+          <div className="p-[2px] bg-gradient-to-r from-[#001C38] via-[#003566] to-[#00C6FF] rounded-2xl shadow-lg">
+            <div className={`${darkMode ? 'bg-[#2D3748]' : 'bg-white'} rounded-2xl p-8`}>
+            <div className="flex items-center gap-3 mb-4">
+              <div className={`w-10 h-10 rounded-lg ${darkMode ? 'bg-[#3d4858]' : 'bg-[#003566]/10'} flex items-center justify-center`}>
+                <MapPin size={20} className={darkMode ? 'text-[#00C6FF]' : 'text-[#003566]'} />
+              </div>
+              <h2 className={`font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] text-xl ${darkMode ? 'text-white' : 'text-[#001C38]'}`}>
+                Edit Location Positions
+              </h2>
+            </div>
+
+            <p className={`mb-6 ${darkMode ? 'text-gray-400' : 'text-[#003566]'}`}>
+              Fix the coordinates of any named building or landmark. Pick a location, click its new spot on the map, and the pin updates instantly.
+            </p>
 
             {/* Search Bar */}
             <div className="mb-4">
@@ -3797,6 +3972,41 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                 </label>
               </div>
             </div>
+
+            {/* Cloud Sync (Cloudflare R2) - only shown when env vars are configured */}
+            {isCloudSyncConfigured() && (
+              <div className="mt-6 pt-6 border-t border-gray-300 dark:border-gray-600">
+                <div className="flex items-center justify-between mb-2">
+                  <h3 className={`text-sm font-semibold ${darkMode ? 'text-gray-200' : 'text-[#001C38]'}`}>
+                    Cloud Sync
+                  </h3>
+                  <span className={`text-[11px] ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                    Last pulled: {formatRelativeTime(lastCloudPull)}
+                  </span>
+                </div>
+                <p className={`text-xs mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Push changes so all 5 kiosks pick them up on next reload. Pull grabs the latest cloud version into this device.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleSyncToCloud}
+                    disabled={isCloudBusy !== false}
+                    variant="outline"
+                    className={`flex-1 ${darkMode ? 'border-green-500/60 text-green-400 hover:bg-green-500/10' : 'border-green-600 text-green-700 hover:bg-green-50'}`}
+                  >
+                    {isCloudBusy === 'pushing' ? 'Uploading…' : '⬆ Sync to Cloud'}
+                  </Button>
+                  <Button
+                    onClick={handlePullLatest}
+                    disabled={isCloudBusy !== false}
+                    variant="outline"
+                    className={`flex-1 ${darkMode ? 'border-sky-500/60 text-sky-400 hover:bg-sky-500/10' : 'border-sky-600 text-sky-700 hover:bg-sky-50'}`}
+                  >
+                    {isCloudBusy === 'pulling' ? 'Pulling…' : '⬇ Pull Latest'}
+                  </Button>
+                </div>
+              </div>
+            )}
 
             {/* Reset All Locations Button */}
             <div className="mt-6 pt-6 border-t border-gray-300 dark:border-gray-600">

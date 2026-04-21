@@ -30,6 +30,19 @@ declare module '*.webp' {
   export default value;
 }
 
+// Cloud sync (Cloudflare R2). Set in .env.local; unset values disable cloud.
+interface ImportMetaEnv {
+  readonly VITE_R2_PUBLIC_URL?: string;   // e.g. https://pub-xxxx.r2.dev/wayfinder.json
+  readonly VITE_R2_ACCOUNT_ID?: string;   // Cloudflare account ID
+  readonly VITE_R2_ACCESS_KEY_ID?: string;
+  readonly VITE_R2_SECRET_KEY?: string;
+  readonly VITE_R2_BUCKET?: string;       // e.g. buksu-wayfinder
+}
+
+interface ImportMeta {
+  readonly env: ImportMetaEnv;
+}
+
 
 
 
