@@ -1,6 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Navigation, ArrowRight } from 'lucide-react';
-import bsuLogo from '../assets/Bsu-logo.png.png';
 
 interface LoginScreenProps {
   onLogin: (role: 'user' | 'admin') => void;
@@ -139,22 +138,15 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
 
       {/* Main Content */}
       <div className="relative z-10 flex flex-col items-center text-center px-4 w-full max-w-4xl flex-1 justify-center">
-        {/* Logo with subtle glow */}
-        <div className="relative" style={{ marginBottom: 'clamp(1.5rem, 3vh, 3rem)' }}>
-          <div
-            className="absolute inset-0 rounded-full pointer-events-none"
-            style={{
-              background: 'radial-gradient(circle, rgba(255,215,0,0.18) 0%, transparent 65%)',
-              transform: 'scale(1.5)',
-            }}
-          />
+        {/* Logo */}
+        <div style={{ marginBottom: 'clamp(1.5rem, 3vh, 3rem)' }}>
           <img
-            src={bsuLogo}
-            alt="BUKIDNON STATE UNIVERSITY Logo"
-            className="relative object-contain drop-shadow-[0_0_15px_rgba(255,215,0,0.3)] cursor-pointer"
+            src="/wayfinder-logo.png"
+            alt="BukSU Wayfinder Logo"
+            className="object-contain cursor-pointer"
             style={{
-              width: 'clamp(6rem, 9vw, 11rem)',
-              height: 'clamp(6rem, 9vw, 11rem)',
+              width: 'clamp(9rem, 16vw, 18rem)',
+              height: 'auto',
             }}
             onClick={handleSecretTap}
           />

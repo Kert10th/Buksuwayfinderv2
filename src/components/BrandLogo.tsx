@@ -1,5 +1,3 @@
-import bsuLogo from '../assets/Bsu-logo.png.png';
-
 interface BrandLogoProps {
   darkMode?: boolean;
 }
@@ -9,8 +7,8 @@ export function BrandLogo({ darkMode = true }: BrandLogoProps) {
     <div className="flex items-center min-w-0" style={{ gap: 'clamp(0.75rem, 1vw, 1.25rem)' }}>
       {/* BSU Logo */}
       <img
-        src={bsuLogo}
-        alt="BSU Logo"
+        src="/wayfinder-logo.png"
+        alt="BukSU Wayfinder Logo"
         className="object-contain drop-shadow-lg shrink-0"
         style={{
           width: 'clamp(3rem, 4vw, 5.5rem)',

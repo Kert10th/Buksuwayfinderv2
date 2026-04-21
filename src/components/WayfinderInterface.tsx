@@ -1104,6 +1104,14 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     });
   };
 
+  // Compact time for narrow (mobile) viewports: "01:38 PM" — no seconds.
+  const formatTimeShort = (date: Date) => {
+    return date.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  };
+
   const locations = [
     'Administrative Building',
     'ARU-Alumni Relation Unit',
@@ -2133,10 +2141,10 @@ const [pathEditorTo, setPathEditorTo] = useState('');
             <BrandLogo darkMode={darkMode} />
           </div>
           <div className="flex items-center shrink-0" style={{ gap: 'clamp(0.75rem, 1vw, 1.25rem)' }}>
-            {/* Date and Time Display */}
+            {/* Date and Time Display — date hidden on mobile, shorter time on mobile */}
             <div className="flex flex-col items-end">
               <div
-                className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
+                className="hidden sm:block font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
                 style={{
                   fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
                   color: darkMode ? '#A0AEC0' : '#475569',
@@ -2145,13 +2153,14 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                 {formatDate(currentDateTime)}
               </div>
               <div
-                className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] font-semibold"
+                className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] font-semibold whitespace-nowrap"
                 style={{
-                  fontSize: 'clamp(1.125rem, 1.4vw, 1.5rem)',
+                  fontSize: 'clamp(0.95rem, 1.4vw, 1.5rem)',
                   color: darkMode ? '#FFFFFF' : '#001C38',
                 }}
               >
-                {formatTime(currentDateTime)}
+                <span className="sm:hidden">{formatTimeShort(currentDateTime)}</span>
+                <span className="hidden sm:inline">{formatTime(currentDateTime)}</span>
               </div>
             </div>
             <Button
