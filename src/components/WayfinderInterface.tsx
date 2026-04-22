@@ -82,6 +82,18 @@ export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProp
     mql.addEventListener('change', handler);
     return () => mql.removeEventListener('change', handler);
   }, []);
+
+  // Mobile breakpoint: drop the date entirely + show a shorter time format
+  // so the header doesn't get crowded on phones.
+  const [isMobileViewport, setIsMobileViewport] = useState(() =>
+    typeof window === 'undefined' ? false : window.matchMedia('(max-width: 639px)').matches,
+  );
+  useEffect(() => {
+    const mql = window.matchMedia('(max-width: 639px)');
+    const handler = (e: MediaQueryListEvent) => setIsMobileViewport(e.matches);
+    mql.addEventListener('change', handler);
+    return () => mql.removeEventListener('change', handler);
+  }, []);
   // Screensaver state (currently commented out)
   // const [showScreensaver, setShowScreensaver] = useState(false);
   // const [inactivityTimer, setInactivityTimer] = useState<NodeJS.Timeout | null>(null);
@@ -2141,17 +2153,19 @@ const [pathEditorTo, setPathEditorTo] = useState('');
             <BrandLogo darkMode={darkMode} />
           </div>
           <div className="flex items-center shrink-0" style={{ gap: 'clamp(0.75rem, 1vw, 1.25rem)' }}>
-            {/* Date and Time Display — date hidden on mobile, shorter time on mobile */}
+            {/* Date and Time Display — JS-driven for reliability across Tailwind setups */}
             <div className="flex flex-col items-end">
-              <div
-                className="hidden sm:block font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
-                style={{
-                  fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
-                  color: darkMode ? '#A0AEC0' : '#475569',
-                }}
-              >
-                {formatDate(currentDateTime)}
-              </div>
+              {!isMobileViewport && (
+                <div
+                  className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
+                  style={{
+                    fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
+                    color: darkMode ? '#A0AEC0' : '#475569',
+                  }}
+                >
+                  {formatDate(currentDateTime)}
+                </div>
+              )}
               <div
                 className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] font-semibold whitespace-nowrap"
                 style={{
@@ -2159,8 +2173,7 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                   color: darkMode ? '#FFFFFF' : '#001C38',
                 }}
               >
-                <span className="sm:hidden">{formatTimeShort(currentDateTime)}</span>
-                <span className="hidden sm:inline">{formatTime(currentDateTime)}</span>
+                {isMobileViewport ? formatTimeShort(currentDateTime) : formatTime(currentDateTime)}
               </div>
             </div>
             <Button
@@ -2212,12 +2225,16 @@ const [pathEditorTo, setPathEditorTo] = useState('');
           /* Search Mode: Fixed sidebar on wide screens; inline stacked above map on narrow ones */
           <div
             className={isWideViewport
-              ? 'fixed top-1/2 left-4 -translate-y-1/2 z-[9999] transition-all duration-300'
+              ? 'fixed left-4 z-[9999] transition-all duration-300'
               : 'relative mx-auto transition-all duration-300'}
             style={{
               width: isWideViewport ? '340px' : '100%',
               maxWidth: isWideViewport ? '340px' : '480px',
-              maxHeight: isWideViewport ? 'calc(100vh - 2rem)' : 'none',
+              // Anchor below the header (header is ~clamp(1rem, 1.8vh, 1.75rem)
+              // padding on each side + brand logo) so Quick Search never
+              // overlaps the header text on any viewport size.
+              top: isWideViewport ? 'clamp(7rem, 12vh, 9.5rem)' : undefined,
+              maxHeight: isWideViewport ? 'calc(100vh - clamp(7rem, 12vh, 9.5rem) - 1.5rem)' : 'none',
               overflowY: isWideViewport ? 'auto' : 'visible',
               pointerEvents: 'auto',
               boxSizing: 'border-box',
