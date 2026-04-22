@@ -3,7 +3,10 @@
   <html lang="en">
     <head>
       <meta charset="UTF-8" />
-      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <!-- Lock viewport scaling on touchscreen kiosks (maximum-scale=1 +
+           user-scalable=no). The map has its own zoom controls — users
+           shouldn't be able to pinch-zoom the whole browser chrome. -->
+      <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no" />
       <title>BukSU Wayfinder</title>
       <link rel="icon" type="image/png" href="/buksuwayfinder-icon.png" />
       <link rel="apple-touch-icon" href="/buksuwayfinder-icon.png" />

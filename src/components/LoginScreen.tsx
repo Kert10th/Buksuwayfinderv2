@@ -42,7 +42,11 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
   };
 
   const handleAdminLogin = () => {
-    if (password === 'admin123') {
+    // Password lives in VITE_ADMIN_PASSWORD (Cloudflare Pages env var).
+    // Fallback 'admin123' only kicks in for local dev without a .env.local —
+    // never ship a build without the env var set in production.
+    const expected = (import.meta.env.VITE_ADMIN_PASSWORD as string | undefined) || 'admin123';
+    if (password === expected) {
       onLogin('admin');
     } else {
       alert('Incorrect Password');

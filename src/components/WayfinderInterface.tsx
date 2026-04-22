@@ -18,6 +18,7 @@ const PUBLIC_MAP_PATH = '/campus-map.png';
 // import { useMapData } from '../hooks/useMapData';
 import { fetchCloudData, uploadCloudData, isCloudSyncConfigured } from '../utils/cloudSync';
 import { cleanupPath } from '../utils/pathCleanup';
+import Fuse from 'fuse.js';
 
 const CLOUD_LAST_PULLED_KEY = 'buksu-cloud-last-pulled';
 
@@ -47,6 +48,8 @@ export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProp
   const mapImageRef = useRef<HTMLImageElement>(null);
   // Ref for the map container to enable auto-scroll on route find
   const mapRef = useRef<HTMLDivElement>(null);
+  // Ref on the Quick Search input so the "/" keyboard shortcut can focus it.
+  const searchInputRef = useRef<HTMLInputElement>(null);
   // Ref to track if we've already updated nodes with default properties
   const hasUpdatedDefaults = useRef(false);
   const [imageAspectRatio, setImageAspectRatio] = useState<number | null>(null);
@@ -1039,6 +1042,69 @@ const [pathEditorTo, setPathEditorTo] = useState('');
 
   // ---------------- /Cloud sync ----------------
 
+  // ---------------- Keyboard shortcuts ----------------
+  // "/"         -> focus the Quick Search input
+  // "Escape"    -> clear the current route / exit stamp mode / exit drawing
+  // "Ctrl+S"    -> admin only: Sync to Cloud (prevents browser Save dialog)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isTyping =
+        target &&
+        (target.tagName === 'INPUT' ||
+          target.tagName === 'TEXTAREA' ||
+          target.isContentEditable);
+
+      // Ctrl/Cmd + S → Sync to Cloud (admin only).
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+        if (isAdmin) {
+          e.preventDefault();
+          handleSyncToCloud();
+        }
+        return;
+      }
+
+      // Plain "/" → focus the search input (only when not already typing).
+      if (e.key === '/' && !isTyping) {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        searchInputRef.current?.select();
+        return;
+      }
+
+      // Escape → unwind the most recent mode in priority order.
+      if (e.key === 'Escape') {
+        if (stampMode) {
+          setStampMode(null);
+          return;
+        }
+        if (isDrawingMode) {
+          handleCancelCustomRoute();
+          return;
+        }
+        if (isLocationEditMode) {
+          setIsLocationEditMode(false);
+          setEditingLocation(null);
+          return;
+        }
+        if (showRoute) {
+          handleClear();
+          return;
+        }
+        if (searchQuery) {
+          setSearchQuery('');
+          (target as HTMLElement | null)?.blur?.();
+          return;
+        }
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin, stampMode, isDrawingMode, isLocationEditMode, showRoute, searchQuery]);
+  // ---------------- /Keyboard shortcuts ----------------
+
   // Save edges to localStorage whenever they change
   useEffect(() => {
     try {
@@ -1894,11 +1960,29 @@ const [pathEditorTo, setPathEditorTo] = useState('');
   // snappy on slower devices — the input updates immediately, the filtered
   // list updates in a lower-priority pass.
   const deferredSearchQuery = useDeferredValue(searchQuery);
+
+  // Fuzzy search index — forgives typos and partial matches.
+  // "cafetria" -> "University Cafeteria"; "off pres" -> "Office of the
+  // University President". Threshold 0.4 is a good balance between forgiving
+  // and precise; minMatchCharLength avoids matching on single-letter queries.
+  const locationFuse = useMemo(
+    () =>
+      new Fuse(locations, {
+        threshold: 0.4,
+        ignoreLocation: true,
+        minMatchCharLength: 2,
+        includeScore: false,
+      }),
+    [locations],
+  );
+
   const filteredLocations = useMemo(() => {
-    const q = deferredSearchQuery.trim().toLowerCase();
+    const q = deferredSearchQuery.trim();
     if (!q) return [];
-    return locations.filter((location) => location.toLowerCase().includes(q));
-  }, [deferredSearchQuery, locations]);
+    // Fuse returns objects with { item }. Map back to plain strings, cap at
+    // a sensible number so the dropdown stays scannable.
+    return locationFuse.search(q, { limit: 12 }).map((r) => r.item);
+  }, [deferredSearchQuery, locationFuse]);
 
   // How many nodes exist per facility category. Used to:
   //  (1) show a count badge on each Quick Access chip, and
@@ -1933,6 +2017,13 @@ const [pathEditorTo, setPathEditorTo] = useState('');
           : 'An admin hasn’t added any of these locations yet.',
         duration: 2500,
       });
+    } else if (!isWideViewport) {
+      // Narrow/portrait layout stacks the sidebar above the map, so clicking
+      // a filter chip leaves the map off-screen. Scroll down to it so users
+      // immediately see the filtered markers.
+      setTimeout(() => {
+        mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
     }
   };
 
@@ -2473,6 +2564,7 @@ const [pathEditorTo, setPathEditorTo] = useState('');
               <div className="relative">
                 <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-[#00C6FF] z-10" size={20} />
                 <Input
+                  ref={searchInputRef}
                   placeholder="Search for a location..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
@@ -3060,6 +3152,7 @@ const [pathEditorTo, setPathEditorTo] = useState('');
           <div className={`relative w-full ${darkMode ? 'bg-[#001C38]' : 'bg-[#F5F7FA]'} flex items-center justify-center`} style={{ zIndex: 1, overflow: 'hidden', maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
             <div
               ref={mapRef}
+              data-kiosk-map
               className="relative w-full max-w-[1200px] overflow-hidden bg-gray-200"
               style={{
                 aspectRatio: imageAspectRatio ? `${imageAspectRatio}` : undefined,
