@@ -424,6 +424,101 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     });
   };
   
+  // Create a new named building/office via the Add Location admin flow.
+  // Places the node at the clicked coords, auto-connects to nearby walkable
+  // nodes, and saves. Returns true on success, false on duplicate/invalid.
+  const createNamedLocation = (
+    name: string,
+    coordinates: { x: number; y: number },
+    floor?: string,
+    localNumber?: string,
+  ): boolean => {
+    const id = name.trim();
+    if (!id) {
+      toast.error('Name required', {
+        description: 'Give the location a name before placing it.',
+        duration: 2000,
+      });
+      return false;
+    }
+    if (mapNodes[id]) {
+      toast.error('Name already in use', {
+        description: `"${id}" already exists on the map.`,
+        duration: 2500,
+      });
+      return false;
+    }
+
+    const newNode: MapNode = {
+      id,
+      coordinates,
+      isWalkableNode: true,
+      displayLabel: id,
+      floor: floor?.trim() || undefined,
+      localNumber: localNumber?.trim() || undefined,
+    };
+
+    setMapData((prev) => {
+      const updatedNodes = { ...prev.nodes, [id]: newNode };
+      // Auto-connect to nearby walkable nodes (same rule as Edit Position).
+      const AUTO_CONNECT_THRESHOLD = 10;
+      const newEdges: Array<{ from: string; to: string }> = [];
+      Object.entries(prev.nodes).forEach(([otherId, other]) => {
+        if (otherId === id || !other.isWalkableNode) return;
+        const dx = other.coordinates.x - coordinates.x;
+        const dy = other.coordinates.y - coordinates.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d <= AUTO_CONNECT_THRESHOLD) {
+          const already = prev.edges.some(
+            (e) =>
+              (e.from === id && e.to === otherId) ||
+              (e.from === otherId && e.to === id),
+          );
+          if (!already) newEdges.push({ from: id, to: otherId });
+        }
+      });
+      return {
+        ...prev,
+        nodes: updatedNodes,
+        edges: newEdges.length ? [...prev.edges, ...newEdges] : prev.edges,
+      };
+    });
+
+    toast.success('Location added', {
+      description: `"${id}" placed on the map.`,
+      duration: 2000,
+    });
+    return true;
+  };
+
+  // Remove a named location and clean up any edges or custom routes that
+  // reference it. Used by the trash button in the Location Marker Editor.
+  const deleteNamedLocation = (name: string) => {
+    setMapData((prev) => {
+      const { [name]: _removed, ...remainingNodes } = prev.nodes;
+      // Drop edges touching this node.
+      const nextEdges = prev.edges.filter(
+        (e) => e.from !== name && e.to !== name,
+      );
+      // Drop any custom routes whose key mentions this node.
+      const nextRoutes: Record<string, Array<{ x: number; y: number }>> = {};
+      Object.entries(prev.customRoutes).forEach(([key, pts]) => {
+        if (key.startsWith(`${name}→`) || key.endsWith(`→${name}`)) return;
+        nextRoutes[key] = pts;
+      });
+      return {
+        ...prev,
+        nodes: remainingNodes,
+        edges: nextEdges,
+        customRoutes: nextRoutes,
+      };
+    });
+    toast.success('Location removed', {
+      description: `"${name}" deleted.`,
+      duration: 2000,
+    });
+  };
+
   // Remove the last added node (undo in stamp mode)
   const removeLastAddedNode = () => {
     if (!lastAddedNodeId) return;
@@ -602,6 +697,13 @@ const [pathEditorTo, setPathEditorTo] = useState('');
   const [isLocationEditMode, setIsLocationEditMode] = useState(false);
   const [editingLocation, setEditingLocation] = useState<string | null>(null);
   const [locationEditorSearchQuery, setLocationEditorSearchQuery] = useState('');
+
+  // Add Location flow — admin types a name, clicks the map to set position.
+  // `pendingNewLocationName` is non-null when a new-location click is armed.
+  const [addLocationName, setAddLocationName] = useState('');
+  const [addLocationFloor, setAddLocationFloor] = useState('');
+  const [addLocationLocalNumber, setAddLocationLocalNumber] = useState('');
+  const [pendingNewLocationName, setPendingNewLocationName] = useState<string | null>(null);
   
   // Stamp Mode States
   const [stampMode, setStampMode] = useState<FacilityType | null>(null);
@@ -1220,7 +1322,10 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     });
   };
 
-  const locations = [
+  // Default/seed locations — the buildings that ship with the app. Admin-added
+  // locations live in mapNodes (category = undefined or 'default') and are
+  // folded into the `locations` list below via useMemo.
+  const DEFAULT_LOCATIONS = useMemo(() => [
     'Administrative Building',
     'ARU-Alumni Relation Unit',
     'ATU-Admission and Testing Unit',
@@ -1271,7 +1376,24 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     'Office of the Vice President in Academic Affairs',
     'Office of the Vice President in Research Extension & Innovation',
     'Office of the Vice President for Culture Arts Sports & Student Services'
-  ];
+  ], []);
+
+  // Union of (a) seeded defaults and (b) any admin-added named buildings
+  // living in mapNodes. Facility-category nodes (comfort rooms, parking,
+  // emergency) are excluded — they have their own markers.
+  const locations = useMemo(() => {
+    const defaultSet = new Set(DEFAULT_LOCATIONS);
+    const customNames: string[] = [];
+    Object.values(mapNodes).forEach((node) => {
+      if (!node?.id) return;
+      // Skip facility-type nodes; they aren't named buildings.
+      if (node.category && node.category !== 'default') return;
+      if (defaultSet.has(node.id)) return;
+      customNames.push(node.id);
+    });
+    customNames.sort((a, b) => a.localeCompare(b));
+    return [...DEFAULT_LOCATIONS, ...customNames];
+  }, [DEFAULT_LOCATIONS, mapNodes]);
 
   // Helper to normalize route keys (trim whitespace, normalize spaces, handle case)
   const normalizeRouteKey = (from: string, to: string) => {
@@ -2175,7 +2297,27 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     if (stampMode && isAdmin) {
       return;
     }
-    
+
+    // Add Location flow: first map click creates the new named node.
+    if (pendingNewLocationName && isAdmin) {
+      e.preventDefault();
+      e.stopPropagation();
+      const coords = getCoordinatesFromEvent(e);
+      const ok = createNamedLocation(
+        pendingNewLocationName,
+        coords,
+        addLocationFloor,
+        addLocationLocalNumber,
+      );
+      if (ok) {
+        setPendingNewLocationName(null);
+        setAddLocationName('');
+        setAddLocationFloor('');
+        setAddLocationLocalNumber('');
+      }
+      return;
+    }
+
     if (isDrawingMode && isDrawingContinuous) {
       console.log('🎨 Drawing mode active - mouse down');
       setIsMouseDown(true);
@@ -3203,7 +3345,7 @@ const [pathEditorTo, setPathEditorTo] = useState('');
               style={{
                 aspectRatio: imageAspectRatio ? `${imageAspectRatio}` : undefined,
                 height: imageAspectRatio ? undefined : '700px',
-                cursor: stampMode ? 'crosshair' : (isLocationEditMode ? 'crosshair' : (isDrawingMode ? 'crosshair' : (zoomLevel > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default'))),
+                cursor: pendingNewLocationName ? 'crosshair' : (stampMode ? 'crosshair' : (isLocationEditMode ? 'crosshair' : (isDrawingMode ? 'crosshair' : (zoomLevel > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default')))),
                 position: 'relative',
                 zIndex: isLocationEditMode ? 10 : 1,
                 maxWidth: '100%',
@@ -3242,6 +3384,25 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                 }
               }}
               onClick={(e) => {
+                // Add Location flow: first map click creates the named node.
+                if (pendingNewLocationName && isAdmin) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const coords = getCoordinatesFromEvent(e);
+                  const ok = createNamedLocation(
+                    pendingNewLocationName,
+                    coords,
+                    addLocationFloor,
+                    addLocationLocalNumber,
+                  );
+                  if (ok) {
+                    setPendingNewLocationName(null);
+                    setAddLocationName('');
+                    setAddLocationFloor('');
+                    setAddLocationLocalNumber('');
+                  }
+                  return;
+                }
                 // In location edit mode, handle click here too (as backup to mouseDown)
                 if (isLocationEditMode && editingLocation) {
                   e.preventDefault();
@@ -4098,6 +4259,103 @@ const [pathEditorTo, setPathEditorTo] = useState('');
               Fix the coordinates of any named building or landmark. Pick a location, click its new spot on the map, and the pin updates instantly.
             </p>
 
+            {/* Add Location */}
+            <div className={`mb-6 p-4 rounded-lg border ${darkMode ? 'bg-[#1e2733] border-[#3d4858]' : 'bg-[#F5F7FA] border-gray-200'}`}>
+              <div className="flex items-center justify-between mb-3">
+                <h3 className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-[#001C38]'}`}>
+                  Add New Location
+                </h3>
+                {pendingNewLocationName && (
+                  <span className={`text-xs font-medium ${darkMode ? 'text-[#E6A13A]' : 'text-[#E6A13A]'}`}>
+                    Click the map to place
+                  </span>
+                )}
+              </div>
+              <p className={`text-xs mb-3 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                Add a new building or office. Fill in the name, optionally a floor/room, then click the map.
+              </p>
+              <div className="flex flex-col gap-2">
+                <input
+                  type="text"
+                  placeholder="Location name (e.g., Dental Clinic)"
+                  value={addLocationName}
+                  onChange={(e) => setAddLocationName(e.target.value)}
+                  className={`w-full px-3 py-2 rounded-lg border text-sm ${
+                    darkMode
+                      ? 'bg-[#2D3748] border-gray-600 text-white placeholder-gray-500 focus:border-[#E6A13A] focus:ring-1 focus:ring-[#E6A13A]/20'
+                      : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400 focus:border-[#003566] focus:ring-1 focus:ring-[#003566]/20'
+                  } outline-none transition-all`}
+                />
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    placeholder="Floor (optional)"
+                    value={addLocationFloor}
+                    onChange={(e) => setAddLocationFloor(e.target.value)}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm ${
+                      darkMode
+                        ? 'bg-[#2D3748] border-gray-600 text-white placeholder-gray-500 focus:border-[#E6A13A] focus:ring-1 focus:ring-[#E6A13A]/20'
+                        : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400 focus:border-[#003566] focus:ring-1 focus:ring-[#003566]/20'
+                    } outline-none transition-all`}
+                  />
+                  <input
+                    type="text"
+                    placeholder="Local # (optional)"
+                    value={addLocationLocalNumber}
+                    onChange={(e) => setAddLocationLocalNumber(e.target.value)}
+                    className={`flex-1 px-3 py-2 rounded-lg border text-sm ${
+                      darkMode
+                        ? 'bg-[#2D3748] border-gray-600 text-white placeholder-gray-500 focus:border-[#E6A13A] focus:ring-1 focus:ring-[#E6A13A]/20'
+                        : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400 focus:border-[#003566] focus:ring-1 focus:ring-[#003566]/20'
+                    } outline-none transition-all`}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  {!pendingNewLocationName ? (
+                    <Button
+                      onClick={() => {
+                        const name = addLocationName.trim();
+                        if (!name) {
+                          toast.error('Name required', {
+                            description: 'Type a name before placing.',
+                            duration: 2000,
+                          });
+                          return;
+                        }
+                        if (mapNodes[name]) {
+                          toast.error('Name already in use', {
+                            description: `"${name}" already exists on the map.`,
+                            duration: 2500,
+                          });
+                          return;
+                        }
+                        setPendingNewLocationName(name);
+                        setStampMode(null);
+                        setIsLocationEditMode(false);
+                        setEditingLocation(null);
+                        setIsDrawingMode(false);
+                        mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      }}
+                      className="bg-[#003566] hover:bg-[#002347] text-white"
+                      size="sm"
+                    >
+                      <MapPin size={16} className="mr-2" />
+                      Place on Map
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => setPendingNewLocationName(null)}
+                      variant="outline"
+                      size="sm"
+                      className={darkMode ? 'border-red-600 text-red-500 hover:bg-red-900/20' : 'border-red-600 text-red-600 hover:bg-red-50'}
+                    >
+                      Cancel
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* Search Bar */}
             <div className="mb-4">
               <div className="relative">
@@ -4137,12 +4395,13 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                 const node = mapNodes[location];
                 const currentFloor = node?.floor || '';
                 const currentLocalNumber = node?.localNumber || '';
+                const isCustomLocation = !DEFAULT_LOCATIONS.includes(location);
                 return (
                   <div
                     key={location}
                     className={`flex flex-col p-4 rounded-lg gap-3 ${
-                      editingLocation === location 
-                        ? 'bg-[#E6A13A]/20 border-2 border-[#E6A13A]' 
+                      editingLocation === location
+                        ? 'bg-[#E6A13A]/20 border-2 border-[#E6A13A]'
                         : darkMode ? 'bg-[#3d4858]' : 'bg-gray-100'
                     }`}
                   >
@@ -4153,28 +4412,54 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                           <span className={`${darkMode ? 'text-white' : 'text-gray-900'}`}>
                             {location}
                           </span>
+                          {isCustomLocation && (
+                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${darkMode ? 'bg-[#00C6FF]/15 text-[#00C6FF]' : 'bg-[#0075FF]/15 text-[#0075FF]'}`}>
+                              Custom
+                            </span>
+                          )}
                         </div>
                         <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-600'} ml-7`}>
                           X: {coords?.x.toFixed(1)}% • Y: {coords?.y.toFixed(1)}%
                         </div>
                       </div>
-                      <Button
-                        onClick={() => {
-                          setEditingLocation(location);
-                          setIsLocationEditMode(true);
-                          setIsDrawingMode(false);
-                          setShowRoute(false);
-                        }}
-                        className={`${
-                          editingLocation === location
-                            ? 'bg-[#E6A13A] text-white'
-                            : darkMode 
-                            ? 'bg-[#C5D4E8] hover:bg-[#B5C4D8] text-gray-800' 
-                            : 'bg-[#003566] hover:bg-[#002347] text-white'
-                        }`}
-                      >
-                        {editingLocation === location ? 'Click on Map' : 'Edit Position'}
-                      </Button>
+                      <div className="flex gap-2 items-center">
+                        <Button
+                          onClick={() => {
+                            setEditingLocation(location);
+                            setIsLocationEditMode(true);
+                            setIsDrawingMode(false);
+                            setShowRoute(false);
+                          }}
+                          className={`${
+                            editingLocation === location
+                              ? 'bg-[#E6A13A] text-white'
+                              : darkMode
+                              ? 'bg-[#C5D4E8] hover:bg-[#B5C4D8] text-gray-800'
+                              : 'bg-[#003566] hover:bg-[#002347] text-white'
+                          }`}
+                        >
+                          {editingLocation === location ? 'Click on Map' : 'Edit Position'}
+                        </Button>
+                        {isCustomLocation && (
+                          <Button
+                            onClick={() => {
+                              if (window.confirm(`Delete "${location}"? This removes the pin, any edges, and any custom routes tied to it. This cannot be undone.`)) {
+                                if (editingLocation === location) {
+                                  setEditingLocation(null);
+                                  setIsLocationEditMode(false);
+                                }
+                                deleteNamedLocation(location);
+                              }
+                            }}
+                            variant="outline"
+                            size="icon"
+                            aria-label={`Delete ${location}`}
+                            className={darkMode ? 'border-red-600/60 text-red-400 hover:bg-red-900/20' : 'border-red-600 text-red-600 hover:bg-red-50'}
+                          >
+                            <Trash2 size={16} />
+                          </Button>
+                        )}
+                      </div>
                     </div>
                     
                     {/* Floor and Local Number Inputs */}
