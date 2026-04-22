@@ -1904,14 +1904,20 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     }
   };
 
-  // Zoom handlers (currently not used in UI but kept for future use)
-  // const handleZoomIn = () => {
-  //   setZoomLevel(prev => Math.min(prev + 0.25, 3));
-  // };
-
-  // const handleZoomOut = () => {
-  //   setZoomLevel(prev => Math.max(prev - 0.25, 0.5));
-  // };
+  // Zoom handlers — wired to on-screen + / - buttons and pinch/wheel gestures.
+  const ZOOM_MIN = 1;
+  const ZOOM_MAX = 4;
+  const handleZoomIn = () => {
+    setZoomLevel((prev) => Math.min(ZOOM_MAX, prev + 0.35));
+  };
+  const handleZoomOut = () => {
+    setZoomLevel((prev) => {
+      const next = Math.max(ZOOM_MIN, prev - 0.35);
+      // When we zoom all the way back out, reset the pan so the map is centered again
+      if (next <= ZOOM_MIN) setPanPosition({ x: 0, y: 0 });
+      return next;
+    });
+  };
 
   const handleResetZoom = () => {
     setZoomLevel(1);
@@ -1938,12 +1944,52 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     setIsDragging(false);
   };
 
-  // Wheel zoom handler (currently not used but kept for future use)
-  // const handleWheel = (e: React.WheelEvent) => {
-  //   e.preventDefault();
-  //   const delta = e.deltaY > 0 ? -0.1 : 0.1;
-  //   setZoomLevel(prev => Math.max(1, Math.min(3, prev + delta)));
-  // };
+  // Mouse-wheel zoom (desktop) — scroll up to zoom in, down to zoom out.
+  // Active anywhere over the map container.
+  const handleWheel = (e: React.WheelEvent) => {
+    // Only react when user is scrolling *vertically*. We don't want horizontal
+    // touchpad scroll (panning) to trigger a zoom.
+    if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? -0.2 : 0.2;
+    setZoomLevel((prev) => {
+      const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, prev + delta));
+      if (next <= ZOOM_MIN) setPanPosition({ x: 0, y: 0 });
+      return next;
+    });
+  };
+
+  // Pinch-zoom support for touch devices. We track the initial distance
+  // between two fingers and the zoom level at pinch start, then scale.
+  const pinchStateRef = useRef<{ startDistance: number; startZoom: number } | null>(null);
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      pinchStateRef.current = { startDistance: dist, startZoom: zoomLevel };
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && pinchStateRef.current) {
+      e.preventDefault();
+      const dx = e.touches[0].clientX - e.touches[1].clientX;
+      const dy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const scale = dist / pinchStateRef.current.startDistance;
+      const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, pinchStateRef.current.startZoom * scale));
+      setZoomLevel(next);
+      if (next <= ZOOM_MIN) setPanPosition({ x: 0, y: 0 });
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) {
+      pinchStateRef.current = null;
+    }
+  };
 
   // Compact floor badge helper — turns "2nd Floor" -> "2F", "Ground Floor" -> "GF".
   // Returns null when the location has no floor info (no badge rendered).
@@ -3164,6 +3210,10 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                 width: '100%',
                 boxSizing: 'border-box'
               }}
+              onWheel={handleWheel}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={handleTouchEnd}
               onMouseDown={(e) => {
                 if (zoomLevel > 1) {
                   handleMouseDown(e);
@@ -3856,14 +3906,35 @@ const [pathEditorTo, setPathEditorTo] = useState('');
               )}
             </div>
 
-            {/* Fixed Zoom Controls */}
-            <div className="absolute top-4 right-4">
+            {/* Fixed Zoom Controls — vertical stack of +, -, and reset */}
+            <div className="absolute top-4 right-4 flex flex-col gap-2">
+              <button
+                onClick={handleZoomIn}
+                disabled={zoomLevel >= 4}
+                title="Zoom in"
+                aria-label="Zoom in"
+                className={`shadow-lg rounded-lg flex items-center justify-center font-bold text-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed ${darkMode ? 'bg-[#1E293B] hover:bg-[#2D3748] text-white border border-gray-700' : 'bg-white hover:bg-gray-50 text-[#001C38] border border-gray-300'}`}
+                style={{ width: 40, height: 40 }}
+              >
+                +
+              </button>
+              <button
+                onClick={handleZoomOut}
+                disabled={zoomLevel <= 1}
+                title="Zoom out"
+                aria-label="Zoom out"
+                className={`shadow-lg rounded-lg flex items-center justify-center font-bold text-xl transition-all disabled:opacity-40 disabled:cursor-not-allowed ${darkMode ? 'bg-[#1E293B] hover:bg-[#2D3748] text-white border border-gray-700' : 'bg-white hover:bg-gray-50 text-[#001C38] border border-gray-300'}`}
+                style={{ width: 40, height: 40 }}
+              >
+                −
+              </button>
               <Button
                 onClick={handleResetZoom}
-                className={`${darkMode ? 'bg-[#E6A13A] hover:bg-[#D19133]' : 'bg-[#E6A13A] hover:bg-[#D19133]'} shadow-lg text-white px-4 h-10 rounded-lg`}
+                title="Reset to default view"
+                className={`${darkMode ? 'bg-[#E6A13A] hover:bg-[#D19133]' : 'bg-[#E6A13A] hover:bg-[#D19133]'} shadow-lg text-white rounded-lg`}
+                style={{ width: 40, height: 40, padding: 0 }}
               >
-                <RotateCcw size={16} className="mr-2" />
-                Reset View
+                <RotateCcw size={16} />
               </Button>
             </div>
 
