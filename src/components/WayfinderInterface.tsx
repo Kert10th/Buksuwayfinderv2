@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useTransition, useDeferredValue } from 'react';
-import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2 } from 'lucide-react';
+import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -118,6 +118,10 @@ const [lastDrawnPoint, setLastDrawnPoint] = useState<PathPoint | null>(null);
 const [drawingThrottle, setDrawingThrottle] = useState(0);
 const [pathEditorFrom, setPathEditorFrom] = useState('');
 const [pathEditorTo, setPathEditorTo] = useState('');
+
+// Saved Custom Routes panel — search + collapsed "From" groups.
+const [savedRoutesQuery, setSavedRoutesQuery] = useState('');
+const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(new Set());
   
   // Load custom routes from localStorage on mount
   const loadCustomRoutesFromStorage = (): Record<string, Array<{x: number, y: number}>> => {
@@ -2169,6 +2173,35 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     return counts;
   }, [mapNodes]);
 
+  // Group the saved custom-routes list by their "From" location, filtered by
+  // the search input. Sorted alphabetically so the panel stays scannable as
+  // the number of routes grows.
+  const groupedCustomRoutes = useMemo(() => {
+    const q = savedRoutesQuery.trim().toLowerCase();
+    const groups: Record<string, Array<{ routeKey: string; from: string; to: string; waypoints: Array<{ x: number; y: number }> }>> = {};
+    Object.entries(customRoutePaths).forEach(([routeKey, waypoints]) => {
+      const [from, to] = routeKey.split('→');
+      if (!from || !to) return;
+      if (q && !from.toLowerCase().includes(q) && !to.toLowerCase().includes(q)) return;
+      (groups[from] ??= []).push({ routeKey, from, to, waypoints });
+    });
+    return Object.entries(groups)
+      .map(([from, rows]) => ({
+        from,
+        rows: rows.sort((a, b) => a.to.localeCompare(b.to)),
+      }))
+      .sort((a, b) => a.from.localeCompare(b.from));
+  }, [customRoutePaths, savedRoutesQuery]);
+
+  const toggleRouteGroup = (from: string) => {
+    setCollapsedRouteGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(from)) next.delete(from);
+      else next.add(from);
+      return next;
+    });
+  };
+
   const handleCategoryClick = (category: FacilityType, label: string) => {
     if (activeCategory === category) {
       setActiveCategory(null);
@@ -3176,7 +3209,8 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                   </div>
                 )}
 
-                {/* Saved Custom Routes - visible inventory so admins can verify saves and manage routes */}
+                {/* Saved Custom Routes — grouped by "From" with search, so the
+                    panel stays scannable even after dozens of routes accrue. */}
                 {!isDrawingMode && Object.keys(customRoutePaths).length > 0 && (
                   <div className="mt-4">
                     <div
@@ -3187,52 +3221,121 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                         boxShadow: '0 4px 6px rgba(0, 0, 0, 0.25)',
                       }}
                     >
-                      <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center justify-between mb-3 gap-2">
                         <p className="text-white font-semibold text-sm drop-shadow-lg">
                           Saved Custom Routes ({Object.keys(customRoutePaths).length})
                         </p>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCollapsedRouteGroups(
+                                new Set(groupedCustomRoutes.map((g) => g.from)),
+                              )
+                            }
+                            className="text-[11px] text-gray-300 hover:text-white transition-colors"
+                          >
+                            Collapse all
+                          </button>
+                          <span className="text-gray-500 text-[11px]">·</span>
+                          <button
+                            type="button"
+                            onClick={() => setCollapsedRouteGroups(new Set())}
+                            className="text-[11px] text-gray-300 hover:text-white transition-colors"
+                          >
+                            Expand all
+                          </button>
+                        </div>
                       </div>
-                      <div className="flex flex-col gap-2 max-h-52 overflow-y-auto pr-1">
-                        {Object.entries(customRoutePaths).map(([routeKey, waypoints]) => {
-                          const [rFrom, rTo] = routeKey.split('→');
-                          return (
-                            <div
-                              key={routeKey}
-                              className="flex items-center justify-between gap-3 px-3 py-2 rounded-lg"
-                              style={{ background: 'rgba(15, 23, 42, 0.6)' }}
-                            >
-                              <div className="flex-1 min-w-0">
-                                <p className="text-xs text-gray-200 truncate">
-                                  <span className="text-green-400">{rFrom}</span>
-                                  <span className="text-gray-500 mx-1">→</span>
-                                  <span className="text-red-400">{rTo}</span>
-                                </p>
-                                <p className="text-[10px] text-gray-400 mt-0.5">
-                                  {waypoints.length} waypoints
-                                </p>
-                              </div>
-                              <Button
-                                onClick={() => {
-                                  setCustomRoutePaths(prev => {
-                                    const next = { ...prev };
-                                    delete next[routeKey];
-                                    return next;
-                                  });
-                                  toast.success('Route deleted', {
-                                    description: `${rFrom} → ${rTo}`,
-                                    duration: 2000,
-                                  });
-                                }}
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 shrink-0 text-red-400 hover:bg-red-500/20 hover:text-red-300"
-                                title="Delete route"
+
+                      <div className="relative mb-3">
+                        <Search
+                          size={14}
+                          className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400"
+                        />
+                        <input
+                          type="text"
+                          placeholder="Filter by name..."
+                          value={savedRoutesQuery}
+                          onChange={(e) => setSavedRoutesQuery(e.target.value)}
+                          className="w-full pl-8 pr-3 py-1.5 rounded-md text-xs bg-[#0f172a]/60 border border-white/10 text-white placeholder-gray-500 outline-none focus:border-[#E6A13A]/60 focus:ring-1 focus:ring-[#E6A13A]/30"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-2 max-h-64 overflow-y-auto pr-1">
+                        {groupedCustomRoutes.length === 0 ? (
+                          <p className="text-xs text-gray-400 text-center py-4">
+                            No routes match "{savedRoutesQuery}"
+                          </p>
+                        ) : (
+                          groupedCustomRoutes.map(({ from, rows }) => {
+                            const collapsed = collapsedRouteGroups.has(from);
+                            return (
+                              <div
+                                key={from}
+                                className="rounded-lg overflow-hidden"
+                                style={{ background: 'rgba(15, 23, 42, 0.6)' }}
                               >
-                                <Trash2 size={14} />
-                              </Button>
-                            </div>
-                          );
-                        })}
+                                <button
+                                  type="button"
+                                  onClick={() => toggleRouteGroup(from)}
+                                  className="w-full flex items-center justify-between px-3 py-2 hover:bg-white/5 transition-colors"
+                                >
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <ChevronDown
+                                      size={14}
+                                      className={`shrink-0 text-gray-400 transition-transform ${collapsed ? '-rotate-90' : ''}`}
+                                    />
+                                    <span className="text-xs text-green-400 truncate text-left">
+                                      {from}
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] text-gray-400 shrink-0 ml-2">
+                                    {rows.length} {rows.length === 1 ? 'route' : 'routes'}
+                                  </span>
+                                </button>
+                                {!collapsed && (
+                                  <div className="border-t border-white/5">
+                                    {rows.map(({ routeKey, to, waypoints }) => (
+                                      <div
+                                        key={routeKey}
+                                        className="flex items-center justify-between gap-2 px-3 py-1.5 hover:bg-white/5 transition-colors"
+                                      >
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-xs text-red-400 truncate" title={to}>
+                                            → {to}
+                                          </p>
+                                          <p className="text-[10px] text-gray-500 mt-0.5">
+                                            {waypoints.length} waypoints
+                                          </p>
+                                        </div>
+                                        <Button
+                                          onClick={() => {
+                                            setCustomRoutePaths((prev) => {
+                                              const next = { ...prev };
+                                              delete next[routeKey];
+                                              return next;
+                                            });
+                                            toast.success('Route deleted', {
+                                              description: `${from} → ${to}`,
+                                              duration: 2000,
+                                            });
+                                          }}
+                                          variant="ghost"
+                                          size="icon"
+                                          className="h-6 w-6 shrink-0 text-red-400 hover:bg-red-500/20 hover:text-red-300"
+                                          title="Delete route"
+                                        >
+                                          <Trash2 size={12} />
+                                        </Button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        )}
                       </div>
                     </div>
                   </div>
