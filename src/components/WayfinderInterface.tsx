@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef, useTransition } from 'react';
-import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, Building2, Hash, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useMemo, useCallback, useRef, useTransition, useDeferredValue } from 'react';
+import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2 } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -17,6 +17,7 @@ const PUBLIC_MAP_PATH = '/campus-map.png';
 // import { calculateDistance, normalizeRouteKey, buildAdjacencyList, findPath, type MapNode, type Edge, type Point } from '../utils/pathfinding';
 // import { useMapData } from '../hooks/useMapData';
 import { fetchCloudData, uploadCloudData, isCloudSyncConfigured } from '../utils/cloudSync';
+import { cleanupPath } from '../utils/pathCleanup';
 
 const CLOUD_LAST_PULLED_KEY = 'buksu-cloud-last-pulled';
 
@@ -944,6 +945,35 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // run once on mount
 
+  // Auto-poll: silently refresh from the cloud every 5 minutes on kiosk
+  // (non-admin) sessions so all 5 kiosks stay in sync without anyone
+  // reloading. Disabled for admins to avoid clobbering their in-progress
+  // edits. Also pauses when the tab is hidden to conserve bandwidth.
+  useEffect(() => {
+    if (!isCloudSyncConfigured() || isAdmin) return;
+    const POLL_INTERVAL_MS = 5 * 60 * 1000;
+    let cancelled = false;
+
+    const pollOnce = async () => {
+      if (document.visibilityState === 'hidden') return;
+      const data = await fetchCloudData();
+      if (cancelled || !data) return;
+      const applied = applyBackup(data, { silent: true });
+      if (applied) {
+        const now = new Date().toISOString();
+        localStorage.setItem(CLOUD_LAST_PULLED_KEY, now);
+        setLastCloudPull(now);
+      }
+    };
+
+    const intervalId = window.setInterval(pollOnce, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isAdmin]);
+
   // Admin: push current state to the cloud.
   const handleSyncToCloud = async () => {
     if (!isCloudSyncConfigured()) {
@@ -1442,14 +1472,22 @@ const [pathEditorTo, setPathEditorTo] = useState('');
       console.log('    start:', finalWaypoints[0]);
       console.log('    end:', finalWaypoints[finalWaypoints.length - 1]);
       console.log('    waypoints count:', finalWaypoints.length);
-      
+
+      // Apply Douglas-Peucker simplification + angle snapping so hand-drawn
+      // paths display with clean horizontal/vertical segments. Legacy wobbly
+      // routes get tidied automatically — admin never has to redraw.
+      const cleanedWaypoints = cleanupPath(finalWaypoints, {
+        simplifyTolerance: 0.8,
+        snapThresholdDeg: 12,
+      });
+      console.log('  Cleaned waypoints:', finalWaypoints.length, '->', cleanedWaypoints.length);
+
       return {
-        start: finalWaypoints[0],            // Exact first drawn point (routing start)
-        end: finalWaypoints[finalWaypoints.length - 1], // Exact last drawn point (routing end)
-        waypoints: finalWaypoints,           // Full drawn path
-        // Visual marker uses EXACT node coordinates
-        visualStart: mapNodes[from]?.coordinates || finalWaypoints[0],
-        isCustomRoute: true                  // Flag to indicate this is a custom route
+        start: cleanedWaypoints[0],
+        end: cleanedWaypoints[cleanedWaypoints.length - 1],
+        waypoints: cleanedWaypoints,
+        visualStart: mapNodes[from]?.coordinates || cleanedWaypoints[0],
+        isCustomRoute: true,
       };
     }
     
@@ -1522,6 +1560,135 @@ const [pathEditorTo, setPathEditorTo] = useState('');
     }
     return null;
   }, [showRoute, fromLocation, toLocation, customRoutePaths, mapNodes]); // Add mapNodes as dependency
+
+  // Memoized facility markers JSX. Without this, the ~dozens of markers rebuild
+  // on every pan/zoom event (which change unrelated state), causing noticeable
+  // jank on lower-end kiosks. Only recalculates when node data or the active
+  // category/stamp mode filter changes.
+  const facilityMarkers = useMemo(() => {
+    // Hand-drawn signage-style pictogram for each facility category.
+    // Returns the inner contents of the pin (the glyph drawn in white on top
+    // of the colored circle). Coordinates are in a 2x2 unit box centered on
+    // (0, 0) so the glyph is sized consistently regardless of category.
+    const renderPictogram = (category: FacilityType, opacity: number) => {
+      const common = { fill: 'white', opacity };
+      switch (category) {
+        case 'comfort-room': {
+          // Standing figure silhouette — universal restroom pictogram.
+          return (
+            <g>
+              <circle cx="0" cy="-0.52" r="0.22" {...common} />
+              <path
+                d="M -0.32 -0.2 L 0.32 -0.2 L 0.22 0.35 L 0.12 0.35 L 0.1 0.7 L -0.1 0.7 L -0.12 0.35 L -0.22 0.35 Z"
+                {...common}
+              />
+            </g>
+          );
+        }
+        case 'parking-4w': {
+          // Bold "P" letter — the international parking sign.
+          return (
+            <text
+              x="0"
+              y="0"
+              fontSize="1.25"
+              fontWeight="900"
+              fill="white"
+              textAnchor="middle"
+              dominantBaseline="central"
+              opacity={opacity}
+              style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
+            >
+              P
+            </text>
+          );
+        }
+        case 'parking-2w': {
+          // Motorcycle silhouette: two wheels + simplified frame.
+          return (
+            <g {...common} stroke="white" strokeWidth="0.1" fill="none">
+              <circle cx="-0.42" cy="0.25" r="0.2" strokeWidth="0.14" />
+              <circle cx="0.42" cy="0.25" r="0.2" strokeWidth="0.14" />
+              <path d="M -0.42 0.25 L -0.05 -0.05 L 0.25 -0.05 L 0.42 0.25" strokeWidth="0.14" strokeLinecap="round" strokeLinejoin="round" />
+              <path d="M -0.15 -0.05 L 0.05 -0.35 L 0.3 -0.35" strokeWidth="0.14" strokeLinecap="round" />
+            </g>
+          );
+        }
+        case 'emergency': {
+          // Bold medical cross — universal emergency / first-aid symbol.
+          return (
+            <g>
+              <rect x="-0.55" y="-0.2" width="1.1" height="0.4" rx="0.05" {...common} />
+              <rect x="-0.2" y="-0.55" width="0.4" height="1.1" rx="0.05" {...common} />
+            </g>
+          );
+        }
+        default:
+          return null;
+      }
+    };
+
+    const categoryColor: Record<FacilityType, string> = {
+      'default': '#003566',
+      'comfort-room': '#E6A13A',
+      'parking-4w': '#4A90E2',
+      'parking-2w': '#50C878',
+      'emergency': '#DC143C',
+    };
+
+    return Object.entries(mapNodes)
+      .filter(([, node]) => {
+        if (!node.category || node.category === 'default') return false;
+        if (stampMode && node.category === stampMode) return true;
+        if (activeCategory === null) return false;
+        return node.category === activeCategory;
+      })
+      .map(([locationName, node]) => {
+        const category = node.category!;
+        let displayCoords = node.coordinates;
+        if (node.parentNodeId && mapNodes[node.parentNodeId]) {
+          displayCoords = mapNodes[node.parentNodeId].coordinates;
+        }
+        const color = categoryColor[category];
+        const opacity = activeCategory === null || activeCategory === category ? 1 : 0.3;
+        return (
+          <g key={locationName}>
+            {/* Colored circle backdrop */}
+            <circle
+              cx={displayCoords.x}
+              cy={displayCoords.y}
+              r="1"
+              fill={color}
+              stroke="white"
+              strokeWidth="0.15"
+              opacity={opacity}
+              style={{ filter: 'drop-shadow(0 0.3px 1.5px rgba(0,0,0,0.5))' }}
+            />
+            {/* Signage-style white pictogram, centered on the pin */}
+            <g transform={`translate(${displayCoords.x}, ${displayCoords.y})`}>
+              {renderPictogram(category, opacity)}
+            </g>
+            {/* Facility label above the circle */}
+            <text
+              x={displayCoords.x}
+              y={displayCoords.y - 1.5}
+              fill={color}
+              fontSize="0.75"
+              fontWeight="bold"
+              textAnchor="middle"
+              dominantBaseline="auto"
+              opacity={opacity}
+              style={{
+                textShadow: '0 0 2px rgba(255,255,255,0.9)',
+                filter: 'drop-shadow(0 0 2px rgba(0,0,0,0.8))',
+              }}
+            >
+              {node.displayLabel || locationName}
+            </text>
+          </g>
+        );
+      });
+  }, [mapNodes, activeCategory, stampMode]);
   
   // Debug: Log routeData when it changes
   useEffect(() => {
@@ -1642,13 +1809,22 @@ const [pathEditorTo, setPathEditorTo] = useState('');
         setShowRoute(true);
         // Switch to navigation mode when route is found
         setUiMode('navigation');
-        
-        // Show success toast
-        toast.success('Route found!', {
-          description: `From ${fromLocation} to ${toLocation}`,
-          duration: 2000,
-        });
-        
+
+        // Show success toast. If the destination has floor info, headline it
+        // so visitors immediately know to go upstairs.
+        const destFloor = mapNodes[toLocation]?.floor;
+        if (destFloor) {
+          toast.success(`🏢 ${toLocation} is on the ${destFloor}`, {
+            description: `Follow the arrows on the map — then head to the floor above.`,
+            duration: 6000,
+          });
+        } else {
+          toast.success('Route found!', {
+            description: `From ${fromLocation} to ${toLocation}`,
+            duration: 2500,
+          });
+        }
+
         // Smooth scroll to the map
         setTimeout(() => {
           mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1703,12 +1879,26 @@ const [pathEditorTo, setPathEditorTo] = useState('');
   //   setZoomLevel(prev => Math.max(1, Math.min(3, prev + delta)));
   // };
 
-  // Filter locations based on search query
-  const filteredLocations = searchQuery.trim()
-    ? locations.filter(location =>
-        location.toLowerCase().includes(searchQuery.toLowerCase())
-      )
-    : [];
+  // Compact floor badge helper — turns "2nd Floor" -> "2F", "Ground Floor" -> "GF".
+  // Returns null when the location has no floor info (no badge rendered).
+  const getFloorBadge = (floor?: string): string | null => {
+    if (!floor || !floor.trim()) return null;
+    const trimmed = floor.trim();
+    const digitMatch = trimmed.match(/^(\d+)/);
+    if (digitMatch) return `${digitMatch[1]}F`;
+    const firstLetter = trimmed.charAt(0).toUpperCase();
+    return firstLetter ? `${firstLetter}F` : null;
+  };
+
+  // Filter locations based on search query. useDeferredValue keeps typing
+  // snappy on slower devices — the input updates immediately, the filtered
+  // list updates in a lower-priority pass.
+  const deferredSearchQuery = useDeferredValue(searchQuery);
+  const filteredLocations = useMemo(() => {
+    const q = deferredSearchQuery.trim().toLowerCase();
+    if (!q) return [];
+    return locations.filter((location) => location.toLowerCase().includes(q));
+  }, [deferredSearchQuery, locations]);
 
   // How many nodes exist per facility category. Used to:
   //  (1) show a count badge on each Quick Access chip, and
@@ -1732,6 +1922,10 @@ const [pathEditorTo, setPathEditorTo] = useState('');
       setActiveCategory(null);
       return;
     }
+    // Always activate the category so the chip highlights consistently.
+    // If there's no data, also toast a friendly hint so the user knows why
+    // nothing appears on the map.
+    setActiveCategory(category);
     if (categoryCounts[category] === 0) {
       toast.info(`No ${label.toLowerCase()} locations yet`, {
         description: isAdmin
@@ -1739,9 +1933,7 @@ const [pathEditorTo, setPathEditorTo] = useState('');
           : 'An admin hasn’t added any of these locations yet.',
         duration: 2500,
       });
-      return;
     }
-    setActiveCategory(category);
   };
 
   const handleSearchSelect = (location: string) => {
@@ -2142,39 +2334,60 @@ const [pathEditorTo, setPathEditorTo] = useState('');
             ? 'linear-gradient(127deg, rgba(6, 11, 40, 0.94) 19%, rgba(10, 14, 35, 0.49) 76%)'
             : 'linear-gradient(127deg, rgba(255, 255, 255, 0.95) 19%, rgba(245, 247, 250, 0.85) 76%)',
           borderColor: darkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 28, 56, 0.12)',
-          paddingLeft: 'clamp(1.25rem, 2.5vw, 3rem)',
-          paddingRight: 'clamp(1.25rem, 2.5vw, 3rem)',
-          paddingTop: 'clamp(1rem, 1.8vh, 1.75rem)',
-          paddingBottom: 'clamp(1rem, 1.8vh, 1.75rem)',
+          // Subtle gold accent line under the header. Thicker now that the
+          // header is taller so the line remains proportional.
+          boxShadow: '0 3px 0 0 rgba(230, 161, 58, 0.65)',
+          // Left padding = sidebar's `left-4` (1rem) + sidebar's internal
+          // padding, so the logo visually labels the "Quick Search" row
+          // inside the sidebar below it. Right padding mirrors it for
+          // symmetric spacing of the date/time cluster on the opposite side.
+          paddingLeft: 'calc(1rem + clamp(1.25rem, 1.8vw, 2rem))',
+          paddingRight: 'calc(1rem + clamp(1.25rem, 1.8vw, 2rem))',
+          // Tighter vertical padding now that the header only holds a logo.
+          paddingTop: 'clamp(0.65rem, 1.2vh, 1.15rem)',
+          paddingBottom: 'clamp(0.65rem, 1.2vh, 1.15rem)',
         }}
       >
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex-1 min-w-0">
+        <div className="w-full flex items-center justify-between gap-3 flex-wrap">
+          <div className="shrink-0">
             <BrandLogo darkMode={darkMode} />
           </div>
           <div className="flex items-center shrink-0" style={{ gap: 'clamp(0.75rem, 1vw, 1.25rem)' }}>
-            {/* Date and Time Display — JS-driven for reliability across Tailwind setups */}
-            <div className="flex flex-col items-end">
+            {/* Date and Time Display — horizontal on tablet+, compact single-line time on mobile */}
+            <div
+              className="flex items-baseline font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
+              style={{ gap: 'clamp(0.5rem, 0.8vw, 0.9rem)' }}
+            >
               {!isMobileViewport && (
-                <div
-                  className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
-                  style={{
-                    fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
-                    color: darkMode ? '#A0AEC0' : '#475569',
-                  }}
-                >
-                  {formatDate(currentDateTime)}
-                </div>
+                <>
+                  <span
+                    style={{
+                      fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
+                      color: darkMode ? '#A0AEC0' : '#475569',
+                    }}
+                  >
+                    {formatDate(currentDateTime)}
+                  </span>
+                  <span
+                    aria-hidden
+                    style={{
+                      color: darkMode ? 'rgba(255,255,255,0.3)' : 'rgba(0,28,56,0.3)',
+                      fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
+                    }}
+                  >
+                    •
+                  </span>
+                </>
               )}
-              <div
-                className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] font-semibold whitespace-nowrap"
+              <span
+                className="font-semibold whitespace-nowrap"
                 style={{
-                  fontSize: 'clamp(0.95rem, 1.4vw, 1.5rem)',
+                  fontSize: 'clamp(0.95rem, 1.15vw, 1.25rem)',
                   color: darkMode ? '#FFFFFF' : '#001C38',
                 }}
               >
                 {isMobileViewport ? formatTimeShort(currentDateTime) : formatTime(currentDateTime)}
-              </div>
+              </span>
             </div>
             <Button
               variant="ghost"
@@ -2293,16 +2506,32 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                       {filteredLocations.length} location{filteredLocations.length !== 1 ? 's' : ''} found
                     </div>
                     <div className="max-h-60 overflow-y-auto">
-                      {filteredLocations.map((location) => (
-                        <button
-                          key={location}
-                          onClick={() => handleSearchSelect(location)}
-                          className={`w-full px-4 py-3 text-left flex items-center gap-3 transition-all ${darkMode ? 'hover:bg-white/10 text-white' : 'hover:bg-[#001C38]/5 text-[#001C38]'}`}
-                        >
-                          <MapPin size={16} className="text-[#00C6FF]" />
-                          <span>{location}</span>
-                        </button>
-                      ))}
+                      {filteredLocations.map((location) => {
+                        const floorBadge = getFloorBadge(mapNodes[location]?.floor);
+                        return (
+                          <button
+                            key={location}
+                            onClick={() => handleSearchSelect(location)}
+                            className={`w-full px-4 py-3 text-left flex items-center gap-3 transition-all ${darkMode ? 'hover:bg-white/10 text-white' : 'hover:bg-[#001C38]/5 text-[#001C38]'}`}
+                          >
+                            <MapPin size={16} className="text-[#00C6FF]" />
+                            <span className="flex-1 min-w-0 truncate">{location}</span>
+                            {floorBadge && (
+                              <span
+                                className="shrink-0 px-2 py-0.5 rounded-md text-xs font-semibold"
+                                style={{
+                                  background: 'rgba(230, 161, 58, 0.2)',
+                                  color: '#E6A13A',
+                                  border: '1px solid rgba(230, 161, 58, 0.35)',
+                                }}
+                                title={mapNodes[location]?.floor}
+                              >
+                                {floorBadge}
+                              </span>
+                            )}
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -2345,15 +2574,32 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                       border: darkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 28, 56, 0.15)',
                     }}
                   >
-                    {locations.map((location) => (
-                      <SelectItem
-                        key={location}
-                        value={location}
-                        className={darkMode ? 'text-white focus:bg-white/10' : 'text-[#001C38] focus:bg-[#001C38]/5'}
-                      >
-                        {location}
-                      </SelectItem>
-                    ))}
+                    {locations.map((location) => {
+                      const floorBadge = getFloorBadge(mapNodes[location]?.floor);
+                      return (
+                        <SelectItem
+                          key={location}
+                          value={location}
+                          className={darkMode ? 'text-white focus:bg-white/10' : 'text-[#001C38] focus:bg-[#001C38]/5'}
+                        >
+                          <span className="flex items-center gap-2 w-full">
+                            <span className="flex-1 min-w-0 truncate">{location}</span>
+                            {floorBadge && (
+                              <span
+                                className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-semibold"
+                                style={{
+                                  background: 'rgba(230, 161, 58, 0.2)',
+                                  color: '#E6A13A',
+                                  border: '1px solid rgba(230, 161, 58, 0.35)',
+                                }}
+                              >
+                                {floorBadge}
+                              </span>
+                            )}
+                          </span>
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
@@ -2393,15 +2639,32 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                       border: darkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 28, 56, 0.15)',
                     }}
                   >
-                    {locations.map((location) => (
-                      <SelectItem
-                        key={location}
-                        value={location}
-                        className={darkMode ? 'text-white focus:bg-white/10' : 'text-[#001C38] focus:bg-[#001C38]/5'}
-                      >
-                        {location}
-                      </SelectItem>
-                    ))}
+                    {locations.map((location) => {
+                      const floorBadge = getFloorBadge(mapNodes[location]?.floor);
+                      return (
+                        <SelectItem
+                          key={location}
+                          value={location}
+                          className={darkMode ? 'text-white focus:bg-white/10' : 'text-[#001C38] focus:bg-[#001C38]/5'}
+                        >
+                          <span className="flex items-center gap-2 w-full">
+                            <span className="flex-1 min-w-0 truncate">{location}</span>
+                            {floorBadge && (
+                              <span
+                                className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-semibold"
+                                style={{
+                                  background: 'rgba(230, 161, 58, 0.2)',
+                                  color: '#E6A13A',
+                                  border: '1px solid rgba(230, 161, 58, 0.35)',
+                                }}
+                              >
+                                {floorBadge}
+                              </span>
+                            )}
+                          </span>
+                        </SelectItem>
+                      );
+                    })}
                   </SelectContent>
                 </Select>
               </div>
@@ -2508,78 +2771,50 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                 </div>
               </label>
               <div className="flex flex-wrap gap-2">
-                <Button
-                  onClick={() => handleCategoryClick('comfort-room', 'Comfort Room')}
-                  variant={activeCategory === 'comfort-room' ? 'default' : 'outline'}
-                  size="sm"
-                  className={`rounded-full transition-all flex items-center gap-2 ${
-                    activeCategory === 'comfort-room'
-                      ? 'bg-[#E6A13A] hover:bg-[#D19133] text-white border-[#E6A13A]'
-                      : darkMode
-                        ? 'bg-white/10 hover:bg-white/20 text-white border-white/30'
-                        : 'bg-white hover:bg-gray-50 text-[#001C38] border-[#001C38]/20'
-                  } ${categoryCounts['comfort-room'] === 0 ? 'opacity-60' : ''}`}
-                >
-                  <DoorOpen size={16} />
-                  <span>Comfort Room</span>
-                  <span className={`ml-1 text-[10px] font-semibold px-1.5 rounded-full ${activeCategory === 'comfort-room' ? 'bg-white/25 text-white' : 'bg-[#E6A13A]/20 text-[#E6A13A]'}`}>
-                    {categoryCounts['comfort-room']}
-                  </span>
-                </Button>
-                <Button
-                  onClick={() => handleCategoryClick('parking-4w', '4-Wheel Parking')}
-                  variant={activeCategory === 'parking-4w' ? 'default' : 'outline'}
-                  size="sm"
-                  className={`rounded-full transition-all flex items-center gap-2 ${
-                    activeCategory === 'parking-4w'
-                      ? 'bg-[#4A90E2] hover:bg-[#3A80D2] text-white border-[#4A90E2]'
-                      : darkMode
-                        ? 'bg-white/10 hover:bg-white/20 text-white border-white/30'
-                        : 'bg-white hover:bg-gray-50 text-[#001C38] border-[#001C38]/20'
-                  } ${categoryCounts['parking-4w'] === 0 ? 'opacity-60' : ''}`}
-                >
-                  <Car size={16} />
-                  <span>4-Wheel Parking</span>
-                  <span className={`ml-1 text-[10px] font-semibold px-1.5 rounded-full ${activeCategory === 'parking-4w' ? 'bg-white/25 text-white' : 'bg-[#4A90E2]/20 text-[#4A90E2]'}`}>
-                    {categoryCounts['parking-4w']}
-                  </span>
-                </Button>
-                <Button
-                  onClick={() => handleCategoryClick('parking-2w', 'Motorcycle Parking')}
-                  variant={activeCategory === 'parking-2w' ? 'default' : 'outline'}
-                  size="sm"
-                  className={`rounded-full transition-all flex items-center gap-2 ${
-                    activeCategory === 'parking-2w'
-                      ? 'bg-[#50C878] hover:bg-[#40B868] text-white border-[#50C878]'
-                      : darkMode
-                        ? 'bg-white/10 hover:bg-white/20 text-white border-white/30'
-                        : 'bg-white hover:bg-gray-50 text-[#001C38] border-[#001C38]/20'
-                  } ${categoryCounts['parking-2w'] === 0 ? 'opacity-60' : ''}`}
-                >
-                  <Bike size={16} />
-                  <span>Motorcycle Parking</span>
-                  <span className={`ml-1 text-[10px] font-semibold px-1.5 rounded-full ${activeCategory === 'parking-2w' ? 'bg-white/25 text-white' : 'bg-[#50C878]/20 text-[#50C878]'}`}>
-                    {categoryCounts['parking-2w']}
-                  </span>
-                </Button>
-                <Button
-                  onClick={() => handleCategoryClick('emergency', 'Emergency')}
-                  variant={activeCategory === 'emergency' ? 'default' : 'outline'}
-                  size="sm"
-                  className={`rounded-full transition-all flex items-center gap-2 ${
-                    activeCategory === 'emergency'
-                      ? 'bg-[#DC143C] hover:bg-[#CC133C] text-white border-[#DC143C]'
-                      : darkMode
-                        ? 'bg-white/10 hover:bg-white/20 text-white border-white/30'
-                        : 'bg-white hover:bg-gray-50 text-[#001C38] border-[#001C38]/20'
-                  } ${categoryCounts['emergency'] === 0 ? 'opacity-60' : ''}`}
-                >
-                  <Stethoscope size={16} />
-                  <span>Emergency</span>
-                  <span className={`ml-1 text-[10px] font-semibold px-1.5 rounded-full ${activeCategory === 'emergency' ? 'bg-white/25 text-white' : 'bg-[#DC143C]/20 text-[#DC143C]'}`}>
-                    {categoryCounts['emergency']}
-                  </span>
-                </Button>
+                {([
+                  { key: 'comfort-room' as FacilityType, label: 'Comfort Room', Icon: DoorOpen, activeBg: '#E6A13A', activeHover: '#D19133' },
+                  { key: 'parking-4w' as FacilityType, label: '4-Wheel Parking', Icon: Car, activeBg: '#4A90E2', activeHover: '#3A80D2' },
+                  { key: 'parking-2w' as FacilityType, label: 'Motorcycle Parking', Icon: Bike, activeBg: '#50C878', activeHover: '#40B868' },
+                  { key: 'emergency' as FacilityType, label: 'Emergency', Icon: Stethoscope, activeBg: '#DC143C', activeHover: '#CC133C' },
+                ]).map(({ key, label, Icon, activeBg, activeHover }) => {
+                  const isActive = activeCategory === key;
+                  const count = categoryCounts[key];
+                  // Inline styles for the active background because this project
+                  // uses a pre-compiled Tailwind CSS dump — arbitrary classes
+                  // like bg-[#4A90E2] aren't in the bundle, so Tailwind classes
+                  // don't apply for some of the category colors. Inline style
+                  // sidesteps the issue entirely.
+                  const neutralClass = darkMode
+                    ? 'bg-white/10 hover:bg-white/20 text-white border-white/30'
+                    : 'bg-white hover:bg-gray-50 text-[#001C38] border-[#001C38]/20';
+                  const badgeClass = isActive
+                    ? 'bg-white/25 text-white'
+                    : darkMode
+                      ? 'bg-white/15 text-white/75'
+                      : 'bg-[#001C38]/10 text-[#001C38]/70';
+                  return (
+                    <Button
+                      key={key}
+                      onClick={() => handleCategoryClick(key, label)}
+                      variant={isActive ? 'default' : 'outline'}
+                      size="sm"
+                      className={`rounded-full transition-all flex items-center gap-2 ${isActive ? 'text-white border-transparent' : neutralClass} ${count === 0 && !isActive ? 'opacity-60' : ''}`}
+                      style={isActive ? { background: activeBg, color: '#FFFFFF', borderColor: activeBg } : undefined}
+                      onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
+                        if (isActive) e.currentTarget.style.background = activeHover;
+                      }}
+                      onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
+                        if (isActive) e.currentTarget.style.background = activeBg;
+                      }}
+                    >
+                      <Icon size={16} />
+                      <span>{label}</span>
+                      <span className={`ml-1 text-[10px] font-semibold px-1.5 rounded-full ${badgeClass}`}>
+                        {count}
+                      </span>
+                    </Button>
+                  );
+                })}
                 {activeCategory && (
                   <Button
                     onClick={() => setActiveCategory(null)}
@@ -2751,6 +2986,18 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                   >
                     Navigating to: <span className="text-[#00C6FF]">{toLocation}</span>
                   </p>
+                  {mapNodes[toLocation]?.floor && (
+                    <p
+                      className="mt-0.5 font-semibold flex items-center gap-2"
+                      style={{
+                        fontSize: 'clamp(0.8rem, 0.95vw, 1.05rem)',
+                        color: '#E6A13A',
+                      }}
+                    >
+                      <span>🏢</span>
+                      <span>{mapNodes[toLocation].floor}</span>
+                    </p>
+                  )}
                 </div>
               </div>
               <Button
@@ -2953,79 +3200,7 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                   zIndex: 2
                 }}
               >
-                {Object.entries(mapNodes)
-                  .filter(([, node]) => {
-                    // Only facility nodes (skip default/unclassified)
-                    if (!node.category || node.category === 'default') return false;
-                    // Admins see everything they're currently placing, even without an active filter
-                    if (stampMode && node.category === stampMode) return true;
-                    // End users & admins not stamping: require an active category filter
-                    if (activeCategory === null) return false;
-                    return node.category === activeCategory;
-                  })
-                  .map(([locationName, node]) => {
-                    const category = node.category!;
-                    let displayCoords = node.coordinates;
-                    if (node.parentNodeId && mapNodes[node.parentNodeId]) {
-                      displayCoords = mapNodes[node.parentNodeId].coordinates;
-                    }
-                    
-                    // Category-specific colors and icons
-                    const categoryConfig: Record<FacilityType, { color: string; icon: string }> = {
-                      'default': { color: '#003566', icon: '📍' },
-                      'comfort-room': { color: '#E6A13A', icon: '🚽' },
-                      'parking-4w': { color: '#4A90E2', icon: '🚗' },
-                      'parking-2w': { color: '#50C878', icon: '🏍️' },
-                      'emergency': { color: '#DC143C', icon: '🚑' }
-                    };
-                    
-                    const config = categoryConfig[category];
-                    
-                    return (
-                      <g key={locationName}>
-                        {/* Facility marker circle */}
-                        <circle 
-                          cx={displayCoords.x} 
-                          cy={displayCoords.y}
-                          r="0.8" 
-                          fill={config.color} 
-                          stroke="white" 
-                          strokeWidth="0.2"
-                          opacity={activeCategory === null || activeCategory === category ? 1 : 0.3}
-                        />
-                        
-                        {/* Facility icon/emoji */}
-                        <text 
-                          x={displayCoords.x} 
-                          y={displayCoords.y + 0.3}
-                          fontSize="1.2"
-                          textAnchor="middle" 
-                          dominantBaseline="central"
-                          opacity={activeCategory === null || activeCategory === category ? 1 : 0.3}
-                        >
-                          {config.icon}
-                        </text>
-                        
-                        {/* Facility label */}
-                        <text 
-                          x={displayCoords.x} 
-                          y={displayCoords.y - 1.2}
-                          fill={config.color} 
-                          fontSize="0.75" 
-                          fontWeight="bold"
-                          textAnchor="middle" 
-                          dominantBaseline="auto"
-                          opacity={activeCategory === null || activeCategory === category ? 1 : 0.3}
-                          style={{
-                            textShadow: '0 0 2px rgba(255,255,255,0.9)',
-                            filter: 'drop-shadow(0 0 2px rgba(0,0,0,0.8))'
-                          }}
-                        >
-                          {node.displayLabel || locationName}
-                        </text>
-                      </g>
-                    );
-                  })}
+                {facilityMarkers}
               </svg>
 
               {/* Location Markers Overlay - Only visible in edit mode to reduce clutter */}
@@ -3580,6 +3755,7 @@ const [pathEditorTo, setPathEditorTo] = useState('');
                   >
                     {toLocation}
                   </text>
+
                       </>
                     );
                   })()}
@@ -3611,79 +3787,9 @@ const [pathEditorTo, setPathEditorTo] = useState('');
             <div className={`mx-8 my-6 p-6 rounded-xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-4 ${
               darkMode ? 'bg-[#2D3748]' : 'bg-gray-50'
             }`}>
-              {/* Highlighted Location Details - Floor and Local Number */}
-              {(mapNodes[toLocation]?.floor || mapNodes[toLocation]?.localNumber) && (
-                <div className={`mb-6 rounded-xl border-2 ${
-                  darkMode 
-                    ? 'bg-[#2D3748] border-[#E6A13A] shadow-lg' 
-                    : 'bg-white border-yellow-400 shadow-lg'
-                }`}>
-                  {/* Simple Header */}
-                  <div className={`px-5 py-3 border-b ${
-                    darkMode ? 'border-[#E6A13A]/30' : 'border-yellow-300'
-                  }`}>
-                    <div className="flex items-center gap-2">
-                      <MapPin size={16} className={darkMode ? 'text-[#E6A13A]' : 'text-yellow-600'} />
-                      <h3 className={`text-sm font-semibold ${
-                        darkMode ? 'text-[#E6A13A]' : 'text-yellow-700'
-                      }`}>
-                        Location Details
-                      </h3>
-                    </div>
-                  </div>
-                  
-                  {/* Simple Content */}
-                  <div className="p-5">
-                    <div className="grid grid-cols-2 gap-4">
-                      {/* Floor Display */}
-                      {mapNodes[toLocation]?.floor && (
-                        <div className={`rounded-lg p-4 ${
-                          darkMode 
-                            ? 'bg-[#E6A13A]/10 border border-[#E6A13A]/30' 
-                            : 'bg-yellow-50 border border-yellow-200'
-                        }`}>
-                          <div className="flex items-center gap-2 mb-2">
-                            <Building2 size={16} className={darkMode ? 'text-[#E6A13A]' : 'text-yellow-600'} />
-                            <p className={`text-[10px] font-semibold uppercase tracking-wider ${
-                              darkMode ? 'text-gray-400' : 'text-gray-600'
-                            }`}>
-                              Floor
-                            </p>
-                          </div>
-                          <p className={`text-3xl font-bold ${
-                            darkMode ? 'text-white' : 'text-gray-900'
-                          }`}>
-                            {mapNodes[toLocation].floor}
-                          </p>
-                        </div>
-                      )}
-                      
-                      {/* Local Number Display */}
-                      {mapNodes[toLocation]?.localNumber && (
-                        <div className={`rounded-lg p-4 ${
-                          darkMode 
-                            ? 'bg-[#E6A13A]/10 border border-[#E6A13A]/30' 
-                            : 'bg-yellow-50 border border-yellow-200'
-                        }`}>
-                          <div className="flex items-center gap-2 mb-2">
-                            <Hash size={16} className={darkMode ? 'text-[#E6A13A]' : 'text-yellow-600'} />
-                            <p className={`text-[10px] font-semibold uppercase tracking-wider ${
-                              darkMode ? 'text-gray-400' : 'text-gray-600'
-                            }`}>
-                              Local Number
-                            </p>
-                          </div>
-                          <p className={`text-3xl font-bold ${
-                            darkMode ? 'text-white' : 'text-gray-900'
-                          }`}>
-                            {mapNodes[toLocation].localNumber}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
+              {/* Floor info is shown in the bottom navigation bar (always
+                  visible while navigating) and in the Find-Route toast — no
+                  duplicate tile here keeps the route panel clean. */}
               </div>
             )}
         </div>

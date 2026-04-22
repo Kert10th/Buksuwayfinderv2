@@ -121,7 +121,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
       </div>
 
       {/* Starfield Background */}
-      <div 
+      <div
         className="absolute inset-0 opacity-30"
         style={{
           backgroundImage: `radial-gradient(2px 2px at 20% 30%, white, transparent),
@@ -136,6 +136,23 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
         }}
       />
 
+      {/* Floating gold particles - ambient life on the landing page */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none" aria-hidden="true">
+        {Array.from({ length: 8 }).map((_, i) => (
+          <div
+            key={i}
+            className="floating-particle"
+            style={{
+              left: `${(i + 1) * 11 + (i % 3) * 2}%`,
+              animationDuration: `${9 + ((i * 1.3) % 6)}s`,
+              animationDelay: `${i * 1.1}s`,
+              width: i % 3 === 0 ? '5px' : '3px',
+              height: i % 3 === 0 ? '5px' : '3px',
+            }}
+          />
+        ))}
+      </div>
+
       {/* Main Content */}
       <div className="relative z-10 flex flex-col items-center text-center px-4 w-full max-w-4xl flex-1 justify-center">
         {/* Logo */}
@@ -149,7 +166,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
           <img
             src="/wayfinder-logo.png"
             alt="BukSU Wayfinder Logo"
-            className="object-contain cursor-pointer"
+            className="object-contain cursor-pointer logo-breathe"
             style={{
               width: 'clamp(9rem, 16vw, 18rem)',
               height: 'auto',
@@ -190,10 +207,17 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
             className="landing-fade-in w-full flex justify-center"
             style={{ marginTop: 'clamp(4rem, 9vh, 10rem)', animationDelay: '540ms' }}
           >
+            {/* CTA wrapper - hosts the breathing pulse ring behind the button */}
+            <div className="relative inline-block cta-breathe">
+              {/* Soft pulsing glow ring behind the button */}
+              <div
+                className="absolute inset-0 rounded-2xl cta-pulse-ring pointer-events-none"
+                aria-hidden="true"
+              />
             {/* Start Wayfinding Button - large, clean CTA */}
             <button
               onClick={() => onLogin('user')}
-              className="group rounded-2xl transition-all hover:scale-[1.03] active:scale-[0.98] flex items-center cursor-pointer font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
+              className="group relative rounded-2xl transition-all hover:scale-[1.03] active:scale-[0.98] flex items-center cursor-pointer font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
               style={{
                 padding: 'clamp(0.9rem, 1.3vw, 1.6rem) clamp(2rem, 3vw, 4rem)',
                 gap: 'clamp(0.75rem, 1vw, 1.25rem)',
@@ -224,6 +248,7 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
                 style={{ width: 'clamp(1.2rem, 1.4vw, 2rem)', height: 'clamp(1.2rem, 1.4vw, 2rem)' }}
               />
             </button>
+            </div>
           </div>
         ) : (
           /* Admin Authentication Form - Clean Simple Design */
@@ -326,6 +351,79 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ onLogin }) => {
         .landing-fade-in {
           opacity: 0;
           animation: landingRiseIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+        }
+
+        /* Slow breathe on the hero logo to give the page a hint of life. */
+        @keyframes logoBreathe {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.025); }
+        }
+        .logo-breathe {
+          animation: logoBreathe 4.5s ease-in-out infinite;
+        }
+
+        /* Soft pulsing glow ring behind the Start Wayfinding CTA. Visible as a
+           halo that swells outward — signals the button is tappable without
+           being noisy. */
+        @keyframes ctaPulseRing {
+          0% {
+            transform: scale(1);
+            opacity: 0.55;
+            box-shadow: 0 0 0 0 rgba(6, 182, 212, 0.55),
+                        0 0 20px 0 rgba(59, 130, 246, 0.35);
+          }
+          70% {
+            opacity: 0;
+            transform: scale(1.08);
+            box-shadow: 0 0 0 18px rgba(6, 182, 212, 0),
+                        0 0 40px 10px rgba(59, 130, 246, 0);
+          }
+          100% {
+            transform: scale(1);
+            opacity: 0;
+          }
+        }
+        .cta-pulse-ring {
+          background: linear-gradient(135deg, rgba(59,130,246,0.35) 0%, rgba(6,182,212,0.35) 100%);
+          animation: ctaPulseRing 2.6s ease-out infinite;
+        }
+        /* Subtle scale breathe on the CTA wrapper to complement the ring. */
+        @keyframes ctaBreathe {
+          0%, 100% { transform: scale(1); }
+          50% { transform: scale(1.015); }
+        }
+        .cta-breathe {
+          animation: ctaBreathe 2.6s ease-in-out infinite;
+        }
+
+        /* Floating gold particles rising slowly from the bottom of the screen. */
+        @keyframes floatUp {
+          0% {
+            transform: translateY(0) translateX(0);
+            opacity: 0;
+          }
+          8%, 92% {
+            opacity: 0.9;
+          }
+          50% {
+            transform: translateY(-55vh) translateX(8px);
+          }
+          100% {
+            transform: translateY(-110vh) translateX(-6px);
+            opacity: 0;
+          }
+        }
+        .floating-particle {
+          position: absolute;
+          bottom: -10px;
+          width: 4px;
+          height: 4px;
+          border-radius: 50%;
+          background: #FFD700;
+          box-shadow: 0 0 8px 2px rgba(255, 215, 0, 0.5),
+                      0 0 16px 4px rgba(230, 161, 58, 0.25);
+          animation: floatUp linear infinite;
+          will-change: transform, opacity;
         }
       `}</style>
     </div>

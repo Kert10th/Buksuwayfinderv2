@@ -4,7 +4,12 @@
     <head>
       <meta charset="UTF-8" />
       <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-      <title>BukSU Wayfinder V2</title>
+      <title>BukSU Wayfinder</title>
+      <link rel="icon" type="image/png" href="/buksuwayfinder-icon.png" />
+      <link rel="apple-touch-icon" href="/buksuwayfinder-icon.png" />
+      <!-- Preload the campus map so it's cached by the time React mounts -->
+      <link rel="preload" as="image" href="/campus-map.png" />
+      <link rel="preload" as="image" href="/wayfinder-logo.png" />
     </head>
 
     <body>
