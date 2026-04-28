@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useTransition, useDeferredValue } from 'react';
-import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, Building2, UtensilsCrossed, Dumbbell, FileText, Landmark, Sparkles, Pencil, Check } from 'lucide-react';
+import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, Building2, UtensilsCrossed, Dumbbell, FileText, Landmark, Sparkles, Pencil, Check, ArrowUp } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -2048,7 +2048,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
         if (activeCategory === null) return false;
         return node.category === activeCategory;
       })
-      .map(([locationName, node]) => {
+      .map(([locationName, node], idx) => {
         const category = node.category!;
         let displayCoords = node.coordinates;
         if (node.parentNodeId && mapNodes[node.parentNodeId]) {
@@ -2056,40 +2056,97 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
         }
         const color = categoryColor[category];
         const opacity = activeCategory === null || activeCategory === category ? 1 : 0.3;
+        // Stagger animations across markers so the pulse ripples through
+        // the row instead of all firing at once. Wraps every ~6 markers.
+        const animDelay = `${(idx % 6) * 0.25}s`;
         return (
           <g key={locationName}>
-            {/* Colored circle backdrop */}
+            {/* Ping pulse — colored ring that grows and fades to draw the
+                eye to every facility marker as soon as the category is
+                activated. Sits behind the main pin. */}
             <circle
               cx={displayCoords.x}
               cy={displayCoords.y}
               r="1"
               fill={color}
-              stroke="white"
-              strokeWidth="0.15"
-              opacity={opacity}
-              style={{ filter: 'drop-shadow(0 0.3px 1.5px rgba(0,0,0,0.5))' }}
-            />
-            {/* Signage-style white pictogram, centered on the pin */}
-            <g transform={`translate(${displayCoords.x}, ${displayCoords.y})`}>
-              {renderPictogram(category, opacity)}
-            </g>
-            {/* Facility label above the circle */}
-            <text
-              x={displayCoords.x}
-              y={displayCoords.y - 1.5}
-              fill={color}
-              fontSize="0.75"
-              fontWeight="bold"
-              textAnchor="middle"
-              dominantBaseline="auto"
-              opacity={opacity}
-              style={{
-                textShadow: '0 0 2px rgba(255,255,255,0.9)',
-                filter: 'drop-shadow(0 0 2px rgba(0,0,0,0.8))',
-              }}
+              opacity="0.4"
+              style={{ pointerEvents: 'none' }}
             >
-              {node.displayLabel || locationName}
-            </text>
+              <animate
+                attributeName="r"
+                values="1;2.6;1"
+                dur="2.2s"
+                begin={animDelay}
+                repeatCount="indefinite"
+              />
+              <animate
+                attributeName="opacity"
+                values="0.45;0;0.45"
+                dur="2.2s"
+                begin={animDelay}
+                repeatCount="indefinite"
+              />
+            </circle>
+            {/* Pin group — all children share a subtle bounce so they
+                move as one. animateTransform with additive="sum" lets us
+                animate translateY without rewriting the children's coords. */}
+            <g>
+              <animateTransform
+                attributeName="transform"
+                type="translate"
+                values="0 0; 0 -0.45; 0 0"
+                dur="2.2s"
+                begin={animDelay}
+                repeatCount="indefinite"
+                additive="sum"
+              />
+              {/* Glassy pin body — radial gradient from a lighter top
+                  to a darker bottom, plus a soft white outline so it
+                  reads as a frosted bead floating over the map. */}
+              <circle
+                cx={displayCoords.x}
+                cy={displayCoords.y}
+                r="1"
+                fill={`url(#glass-${category})`}
+                stroke="rgba(255, 255, 255, 0.55)"
+                strokeWidth="0.12"
+                opacity={opacity}
+                style={{ filter: 'drop-shadow(0 0.4px 1.6px rgba(0,0,0,0.45))' }}
+              />
+              {/* Top gloss highlight — a small bright ellipse at the
+                  top of the pin makes the surface look curved and lit
+                  from above (the "glassy" cue). */}
+              <ellipse
+                cx={displayCoords.x}
+                cy={displayCoords.y - 0.32}
+                rx="0.55"
+                ry="0.32"
+                fill="url(#glass-gloss)"
+                opacity={opacity * 0.9}
+                style={{ pointerEvents: 'none' }}
+              />
+              {/* Signage-style white pictogram, centered on the pin */}
+              <g transform={`translate(${displayCoords.x}, ${displayCoords.y})`}>
+                {renderPictogram(category, opacity)}
+              </g>
+              {/* Facility label above the circle */}
+              <text
+                x={displayCoords.x}
+                y={displayCoords.y - 1.5}
+                fill={color}
+                fontSize="0.75"
+                fontWeight="bold"
+                textAnchor="middle"
+                dominantBaseline="auto"
+                opacity={opacity}
+                style={{
+                  textShadow: '0 0 2px rgba(255,255,255,0.9)',
+                  filter: 'drop-shadow(0 0 2px rgba(0,0,0,0.8))',
+                }}
+              >
+                {node.displayLabel || locationName}
+              </text>
+            </g>
           </g>
         );
       });
@@ -3682,7 +3739,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   { key: 'parking-4w' as FacilityType, label: '4-Wheel Parking', Icon: Car, activeBg: '#4A90E2', activeHover: '#3A80D2' },
                   { key: 'parking-2w' as FacilityType, label: 'Motorcycle Parking', Icon: Bike, activeBg: '#50C878', activeHover: '#40B868' },
                   { key: 'emergency' as FacilityType, label: 'Emergency', Icon: Stethoscope, activeBg: '#DC143C', activeHover: '#CC133C' },
-                ]).map(({ key, label, Icon, activeBg, activeHover }) => {
+                ]).map(({ key, label, Icon, activeBg, activeHover }, idx) => {
                   const isActive = activeCategory === key;
                   const count = categoryCounts[key];
                   // Inline styles for the active background because this project
@@ -3698,13 +3755,16 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     : darkMode
                       ? 'bg-white/15 text-white/75'
                       : 'bg-[#001C38]/10 text-[#001C38]/70';
+                  // Stagger each chip's icon bounce by 0.3s so the row
+                  // ripples instead of all bouncing in unison.
+                  const iconDelay = `${idx * 0.3}s`;
                   return (
                     <Button
                       key={key}
                       onClick={() => handleCategoryClick(key, label)}
                       variant={isActive ? 'default' : 'outline'}
                       size="sm"
-                      className={`rounded-full transition-all flex items-center gap-2 ${isActive ? 'text-white border-transparent' : neutralClass} ${count === 0 && !isActive ? 'opacity-60' : ''}`}
+                      className={`qa-chip rounded-full transition-all flex items-center gap-2 ${isActive ? 'text-white border-transparent' : neutralClass} ${count === 0 && !isActive ? 'opacity-60' : ''}`}
                       style={isActive ? { background: activeBg, color: '#FFFFFF', borderColor: activeBg } : undefined}
                       onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
                         if (isActive) e.currentTarget.style.background = activeHover;
@@ -3713,7 +3773,17 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                         if (isActive) e.currentTarget.style.background = activeBg;
                       }}
                     >
-                      <Icon size={16} />
+                      <span
+                        className="qa-icon"
+                        style={{
+                          // CSS variable consumed by the qaIconGlow keyframe
+                          // so each chip's bounce-glow uses its brand color.
+                          ['--qa-color' as never]: activeBg,
+                          animationDelay: iconDelay,
+                        }}
+                      >
+                        <Icon size={16} />
+                      </span>
                       <span>{label}</span>
                       <span className={`ml-1 text-[10px] font-semibold px-1.5 rounded-full ${badgeClass}`}>
                         {count}
@@ -3937,8 +4007,115 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
             )}
             </div>
           </div>
+        ) : isWideViewport ? (
+          /* Navigation Mode (kiosk / wide): single floating glassy pill at
+             the top center of the viewport. Frosted-glass, all on one row,
+             stays out of the way of the map. */
+          <div
+            className="fixed left-1/2 -translate-x-1/2 z-50 transition-all duration-300"
+            style={{
+              top: 'clamp(6.25rem, 10vh, 8rem)',
+              pointerEvents: 'auto',
+              maxWidth: 'min(56rem, calc(100vw - 2rem))',
+            }}
+          >
+            <div
+              className="flex items-center rounded-full"
+              style={{
+                gap: 'clamp(0.85rem, 1.4vw, 1.5rem)',
+                paddingLeft: 'clamp(1.1rem, 1.6vw, 1.75rem)',
+                paddingRight: 'clamp(0.4rem, 0.6vw, 0.6rem)',
+                paddingTop: 'clamp(0.4rem, 0.6vw, 0.6rem)',
+                paddingBottom: 'clamp(0.4rem, 0.6vw, 0.6rem)',
+                background: darkMode
+                  ? 'rgba(10, 14, 35, 0.55)'
+                  : 'rgba(255, 255, 255, 0.55)',
+                backdropFilter: 'blur(20px) saturate(140%)',
+                WebkitBackdropFilter: 'blur(20px) saturate(140%)',
+                border: darkMode
+                  ? '1px solid rgba(255, 255, 255, 0.12)'
+                  : '1px solid rgba(0, 28, 56, 0.10)',
+                boxShadow: darkMode
+                  ? '0 14px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255,255,255,0.08)'
+                  : '0 14px 40px rgba(0, 28, 56, 0.12), inset 0 1px 0 rgba(255,255,255,0.55)',
+              }}
+            >
+              {/* Pulse + label */}
+              <div className="flex items-center gap-2 shrink-0">
+                <div className="w-2 h-2 rounded-full bg-[#00C6FF] animate-pulse" />
+                <span
+                  style={{
+                    fontSize: 'clamp(0.7rem, 0.8vw, 0.85rem)',
+                    letterSpacing: '0.18em',
+                    textTransform: 'uppercase',
+                    color: darkMode ? 'rgba(255,255,255,0.65)' : 'rgba(0,28,56,0.6)',
+                    fontWeight: 600,
+                  }}
+                >
+                  Navigating to
+                </span>
+              </div>
+
+              {/* Destination name */}
+              <span
+                className="truncate font-semibold"
+                style={{
+                  fontSize: 'clamp(0.95rem, 1.15vw, 1.25rem)',
+                  color: darkMode ? '#FFFFFF' : '#001C38',
+                  maxWidth: 'clamp(14rem, 28vw, 28rem)',
+                }}
+                title={toLocation}
+              >
+                {toLocation}
+              </span>
+
+              {/* Floor callout — high-contrast solid gold pill with an
+                  upward arrow + subtle pulsing glow so visitors don't
+                  miss that they need to go up. Sized larger than the
+                  surrounding text to draw the eye. */}
+              {mapNodes[toLocation]?.floor && (
+                <span
+                  className="shrink-0 inline-flex items-center rounded-full font-bold uppercase"
+                  style={{
+                    gap: 'clamp(0.3rem, 0.5vw, 0.5rem)',
+                    fontSize: 'clamp(0.85rem, 1.05vw, 1.15rem)',
+                    letterSpacing: '0.04em',
+                    padding: 'clamp(0.4rem, 0.55vw, 0.55rem) clamp(0.85rem, 1.1vw, 1.15rem)',
+                    background: 'linear-gradient(135deg, #F5B83C 0%, #E6A13A 50%, #D08A2A 100%)',
+                    color: '#3B2410',
+                    border: '1px solid rgba(255, 230, 170, 0.55)',
+                    boxShadow: '0 0 0 0 rgba(230, 161, 58, 0.55)',
+                    animation: 'floorPulse 2.4s ease-in-out infinite',
+                  }}
+                  title={`Destination is on ${mapNodes[toLocation].floor}`}
+                >
+                  <ArrowUp size={16} strokeWidth={3} />
+                  {mapNodes[toLocation].floor}
+                </span>
+              )}
+
+              {/* End Route — pill button on the right */}
+              <Button
+                onClick={handleClear}
+                className="rounded-full text-white transition-all shrink-0"
+                style={{
+                  background: 'linear-gradient(81deg, #ef4444 0%, #dc2626 100%)',
+                  boxShadow: '0 4px 12px rgba(239, 68, 68, 0.30)',
+                  height: 'clamp(2.25rem, 2.8vw, 2.75rem)',
+                  paddingLeft: 'clamp(0.9rem, 1.2vw, 1.25rem)',
+                  paddingRight: 'clamp(0.9rem, 1.2vw, 1.25rem)',
+                  fontSize: 'clamp(0.8rem, 0.95vw, 1rem)',
+                  fontWeight: 600,
+                }}
+                title="End route and start a new search"
+              >
+                <X size={16} className="mr-1.5" />
+                End Route
+              </Button>
+            </div>
+          </div>
         ) : (
-          /* Navigation Mode: Small Bottom Bar */
+          /* Navigation Mode (mobile/tablet): original compact bottom bar. */
           <div
             className="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 rounded-2xl transition-all duration-300"
             style={{
@@ -4236,6 +4413,40 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   zIndex: 2,
                 }}
               >
+                {/* Glassy radial gradients per category — lighter at the
+                    top to simulate a lit sphere, darker at the bottom.
+                    Referenced as fill="url(#glass-<category>)" by each
+                    marker's circle. Plus a shared white top-highlight
+                    ellipse overlay defined as a symbol. */}
+                <defs>
+                  <radialGradient id="glass-comfort-room" cx="50%" cy="28%" r="62%" fx="50%" fy="22%">
+                    <stop offset="0%"  stopColor="#FFE6A8" stopOpacity="0.98" />
+                    <stop offset="55%" stopColor="#E6A13A" stopOpacity="0.92" />
+                    <stop offset="100%" stopColor="#A8731F" stopOpacity="0.95" />
+                  </radialGradient>
+                  <radialGradient id="glass-parking-4w" cx="50%" cy="28%" r="62%" fx="50%" fy="22%">
+                    <stop offset="0%"  stopColor="#BFE0FF" stopOpacity="0.98" />
+                    <stop offset="55%" stopColor="#4A90E2" stopOpacity="0.92" />
+                    <stop offset="100%" stopColor="#1F5BAF" stopOpacity="0.95" />
+                  </radialGradient>
+                  <radialGradient id="glass-parking-2w" cx="50%" cy="28%" r="62%" fx="50%" fy="22%">
+                    <stop offset="0%"  stopColor="#C9F2D6" stopOpacity="0.98" />
+                    <stop offset="55%" stopColor="#50C878" stopOpacity="0.92" />
+                    <stop offset="100%" stopColor="#1F8C4C" stopOpacity="0.95" />
+                  </radialGradient>
+                  <radialGradient id="glass-emergency" cx="50%" cy="28%" r="62%" fx="50%" fy="22%">
+                    <stop offset="0%"  stopColor="#FFC2CD" stopOpacity="0.98" />
+                    <stop offset="55%" stopColor="#DC143C" stopOpacity="0.92" />
+                    <stop offset="100%" stopColor="#8E0E27" stopOpacity="0.95" />
+                  </radialGradient>
+                  {/* Soft top-of-pin gloss — a small bright ellipse near
+                      the top edge, faded out to nothing at the bottom. */}
+                  <radialGradient id="glass-gloss" cx="50%" cy="20%" r="40%" fx="50%" fy="15%">
+                    <stop offset="0%"  stopColor="#FFFFFF" stopOpacity="0.85" />
+                    <stop offset="60%" stopColor="#FFFFFF" stopOpacity="0.15" />
+                    <stop offset="100%" stopColor="#FFFFFF" stopOpacity="0" />
+                  </radialGradient>
+                </defs>
                 {facilityMarkers}
               </svg>
 
@@ -4856,7 +5067,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     START
                   </text>
                   
-                        {/* Start location name - smaller */}
+                        {/* Start location name — hidden on wide viewports
+                            since the side panel duplicates it. Kept for
+                            mobile/tablet where the bottom bar is compact. */}
+                        {!isWideViewport && (
                   <text
                           x={pathStartPoint.x}
                           y={pathStartPoint.y + 1.2}
@@ -4872,6 +5086,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   >
                     {fromLocation}
                   </text>
+                        )}
                       </>
                     );
                   })()}
@@ -4938,7 +5153,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     END
                   </text>
                   
-                        {/* End location name - smaller */}
+                        {/* End location name — hidden on wide viewports
+                            since the right side panel shows it big. */}
+                        {!isWideViewport && (
                   <text
                           x={pathEndPoint.x}
                           y={pathEndPoint.y + 1.2}
@@ -4954,6 +5171,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   >
                     {toLocation}
                   </text>
+                        )}
 
                       </>
                     );
