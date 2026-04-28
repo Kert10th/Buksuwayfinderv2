@@ -1879,15 +1879,12 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       console.log('    end:', finalWaypoints[finalWaypoints.length - 1]);
       console.log('    waypoints count:', finalWaypoints.length);
 
-      // Apply Douglas-Peucker simplification only — strips redundant/noisy
-      // points from the drawing without altering direction. Angle snapping
-      // is disabled because cumulative snap errors can drift a hand-drawn
-      // path far from where the admin actually drew it (each snapped point
-      // is computed off the previous *snapped* point, so error compounds).
-      const cleanedWaypoints = cleanupPath(finalWaypoints, {
-        simplifyTolerance: 0.4,
-        snapThresholdDeg: 0,
-      });
+      // No simplification or angle snapping — drawing is click-by-click
+      // (Google Earth style), so every clicked point is intentional and
+      // must be preserved exactly. Simplification was dropping clicked
+      // points whose collinear neighbors made them look "redundant",
+      // producing a path that visibly didn't match where the admin clicked.
+      const cleanedWaypoints = finalWaypoints;
       console.log('  Cleaned waypoints:', finalWaypoints.length, '->', cleanedWaypoints.length);
 
       return {
@@ -2871,10 +2868,18 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       setPathEditorTo(to);
     }
     
-    setPathPoints([]);
-    setLastDrawnPoint(null);
+    // Pre-seed the path with the start pin's position so the user's first
+    // click naturally extends from the green "You're Here" / origin marker
+    // — no visible connector segment between the pin and their first point.
+    // For the kiosk, prefer the click-to-place visual override.
+    const startPin =
+      from === kioskLocation && kioskPinOverride
+        ? kioskPinOverride
+        : mapNodes[from]?.coordinates;
+    setPathPoints(startPin ? [{ x: startPin.x, y: startPin.y }] : []);
+    setLastDrawnPoint(startPin ? { x: startPin.x, y: startPin.y } : null);
     setIsDrawingMode(true);
-    console.log('Started drawing custom route:', from, '→', to);
+    console.log('Started drawing custom route:', from, '→', to, 'seeded:', startPin);
   };
 
   // Save the drawn path to customRoutePaths
@@ -2891,12 +2896,19 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     // Convert PathPoint[] to {x, y}[] for storage
     const waypoints = pathPoints.map(p => ({ x: p.x, y: p.y }));
 
-    // Anchor the route to the actual FROM/TO pins so the drawn path visually
-    // connects to the green/red markers instead of floating a few units away
-    // from them. For the kiosk location, anchor to the *visual* pin position
-    // (the click-to-place override) rather than the node's routing coords —
-    // otherwise the first segment jumps from the green "You're Here" pin to
-    // a different spot before continuing along the drawn path.
+    // Connect the route to the FROM/TO pins so the green/red markers join
+    // up with the drawing. Previously this *replaced* the first and last
+    // drawn points with the pin coords, which threw away the user's final
+    // approach and produced a visible "auto-route" jump near the endpoint.
+    // Now we *prepend / append* the pin points (with a tiny dedup check)
+    // so the drawn shape is preserved end-to-end.
+    const SNAP_DEDUP = 1.0; // units — if drawn point is closer than this, skip insert
+    const dist = (a: {x: number; y: number}, b: {x: number; y: number}) =>
+      Math.hypot(a.x - b.x, a.y - b.y);
+
+    // For the kiosk location, anchor to the *visual* pin (click-to-place
+    // override) rather than the node's routing coords — otherwise the
+    // first segment jumps from "You're Here" to the underlying node coords.
     const fromPin =
       pathEditorFrom === kioskLocation && kioskPinOverride
         ? kioskPinOverride
@@ -2905,8 +2917,17 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       pathEditorTo === kioskLocation && kioskPinOverride
         ? kioskPinOverride
         : mapNodes[pathEditorTo]?.coordinates;
-    if (fromPin) waypoints[0] = { x: fromPin.x, y: fromPin.y };
-    if (toPin) waypoints[waypoints.length - 1] = { x: toPin.x, y: toPin.y };
+    if (fromPin && dist(waypoints[0], fromPin) > SNAP_DEDUP) {
+      waypoints.unshift({ x: fromPin.x, y: fromPin.y });
+    } else if (fromPin) {
+      waypoints[0] = { x: fromPin.x, y: fromPin.y };
+    }
+    const last = waypoints[waypoints.length - 1];
+    if (toPin && dist(last, toPin) > SNAP_DEDUP) {
+      waypoints.push({ x: toPin.x, y: toPin.y });
+    } else if (toPin) {
+      waypoints[waypoints.length - 1] = { x: toPin.x, y: toPin.y };
+    }
 
     setCustomRoutePaths(prev => ({
       ...prev,
@@ -4232,7 +4253,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
                     transformOrigin: 'center center',
                     willChange: 'transform',
-                    zIndex: 5,
+                    // Above the route overlay (zIndex 9999) so the green
+                    // "You're Here" pin/badge sits on top of the path line.
+                    zIndex: 10000,
                   }}
                 >
                   <defs>
@@ -4316,7 +4339,11 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                           </g>
                         </g>
 
-                        {/* Speech-bubble label */}
+                        {/* Speech-bubble label — hidden while a route is
+                            displayed so the white bubble doesn't cover the
+                            road behind it. The pulsing pin alone is enough
+                            to mark the start once arrows are shown. */}
+                        {!showRoute && (
                         <g style={{ filter: 'drop-shadow(0 0.18px 0.3px rgba(0,0,0,0.5))' }}>
                           {/* Bubble body */}
                           <rect
@@ -4359,6 +4386,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                             You're Here.
                           </text>
                         </g>
+                        )}
                       </g>
                     );
                   })()}
@@ -4540,13 +4568,18 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
 
               {/* Route Path Drawing Overlay - Yellow line and numbered dots (Google Maps style) */}
               {isDrawingMode && pathPoints.length > 0 && (
-                <svg 
-                  className="absolute inset-0 w-full h-full pointer-events-none"
+                <svg
+                  // Match the map IMG's transition so drawn dots animate
+                  // alongside the buildings during zoom — without it the
+                  // dots snap to the new zoom while the IMG eases over
+                  // 300ms, decoupling the line from the map mid-zoom.
+                  className={`absolute inset-0 w-full h-full pointer-events-none ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
                   viewBox="0 0 100 100"
                   preserveAspectRatio="none"
                   style={{
                     transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
                     transformOrigin: 'center center',
+                    willChange: 'transform',
                     zIndex: 10000
                   }}
                 >
