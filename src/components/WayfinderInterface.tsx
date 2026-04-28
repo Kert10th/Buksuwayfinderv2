@@ -2660,8 +2660,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     if (isDrawingMode && isDrawingContinuous) {
       console.log('🎨 Drawing mode active - mouse down');
       setIsMouseDown(true);
-      // Use exact coordinates without snapping - independent path drawing
-      const coords = getCoordinatesFromEvent(e);
+      // Use viewBox-space coordinates (inverts zoom/pan) so the saved path
+      // matches the underlying map regardless of the user's current zoom.
+      const coords = getViewBoxCoordsFromEvent(e);
       const point: PathPoint = { x: coords.x, y: coords.y }; // No locationId - independent path
       console.log('📍 Adding point (independent):', point);
       // Start new path or add first point
@@ -2756,8 +2757,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       const now = Date.now();
       if (now - drawingThrottle > 10) { // Add point every 10ms max
         setDrawingThrottle(now);
-        // Use exact coordinates without snapping - independent path drawing
-        const coords = getCoordinatesFromEvent(e);
+        // viewBox-space coords so the path renders correctly at any zoom.
+        const coords = getViewBoxCoordsFromEvent(e);
         const point: PathPoint = { x: coords.x, y: coords.y }; // No locationId - independent path
         addPointToPath(point, 0.3); // Smaller minimum distance for smoother curves
       }
@@ -2788,9 +2789,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     if (isDrawingMode && !isDrawingContinuous) {
       // Check if this click was already handled by mouseDown (shouldn't happen, but safety check)
       if (e.detail === 0) return; // Ignore programmatic clicks
-      
-      // Use exact coordinates without snapping - independent path drawing
-      const coords = getCoordinatesFromEvent(e);
+
+      // viewBox-space coords so click-to-place waypoints survive zoom/pan.
+      const coords = getViewBoxCoordsFromEvent(e);
       const point: PathPoint = { x: coords.x, y: coords.y }; // No locationId - independent path
       
       // Use functional update to ensure we have the latest state
@@ -2892,9 +2893,18 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
 
     // Anchor the route to the actual FROM/TO pins so the drawn path visually
     // connects to the green/red markers instead of floating a few units away
-    // from them. Uses node coordinates if the locations exist in mapNodes.
-    const fromPin = mapNodes[pathEditorFrom]?.coordinates;
-    const toPin = mapNodes[pathEditorTo]?.coordinates;
+    // from them. For the kiosk location, anchor to the *visual* pin position
+    // (the click-to-place override) rather than the node's routing coords —
+    // otherwise the first segment jumps from the green "You're Here" pin to
+    // a different spot before continuing along the drawn path.
+    const fromPin =
+      pathEditorFrom === kioskLocation && kioskPinOverride
+        ? kioskPinOverride
+        : mapNodes[pathEditorFrom]?.coordinates;
+    const toPin =
+      pathEditorTo === kioskLocation && kioskPinOverride
+        ? kioskPinOverride
+        : mapNodes[pathEditorTo]?.coordinates;
     if (fromPin) waypoints[0] = { x: fromPin.x, y: fromPin.y };
     if (toPin) waypoints[waypoints.length - 1] = { x: toPin.x, y: toPin.y };
 
