@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useTransition, useDeferredValue } from 'react';
-import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown } from 'lucide-react';
+import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, Building2, UtensilsCrossed, Dumbbell, FileText, Landmark, Sparkles, Pencil, Check } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -64,7 +64,53 @@ export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProp
       root.classList.remove('dark');
     }
   }, [darkMode]);
-  const [fromLocation, setFromLocation] = useState('Main Gate');
+  // Kiosk physical location — admin-configurable, persisted in localStorage.
+  // The kiosk is mounted at one fixed spot on wide displays (≥1024px), so the
+  // route always starts here. Mobile users still get the original FROM dropdown.
+  const KIOSK_LOCATION_KEY = 'buksu-kiosk-location';
+  const [kioskLocation, setKioskLocationState] = useState<string>(() => {
+    if (typeof window === 'undefined') return 'Main Lobby';
+    return localStorage.getItem(KIOSK_LOCATION_KEY) || 'Main Lobby';
+  });
+  const setKioskLocation = useCallback((loc: string) => {
+    setKioskLocationState(loc);
+    setFromLocation(loc);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(KIOSK_LOCATION_KEY, loc);
+    }
+  }, []);
+
+  // Optional override for the kiosk pin's *visual* coordinates. Routing still
+  // uses mapNodes[kioskLocation].coordinates for pathfinding — this only moves
+  // where the green "You're Here" pin is drawn. Persisted as JSON {x, y}.
+  const KIOSK_PIN_OVERRIDE_KEY = 'buksu-kiosk-pin-coords';
+  const [kioskPinOverride, setKioskPinOverrideState] = useState<{ x: number; y: number } | null>(() => {
+    if (typeof window === 'undefined') return null;
+    const raw = localStorage.getItem(KIOSK_PIN_OVERRIDE_KEY);
+    if (!raw) return null;
+    try {
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') {
+        return { x: parsed.x, y: parsed.y };
+      }
+    } catch {
+      /* fall through */
+    }
+    return null;
+  });
+  const setKioskPinOverride = useCallback((coords: { x: number; y: number } | null) => {
+    setKioskPinOverrideState(coords);
+    if (typeof window === 'undefined') return;
+    if (coords) localStorage.setItem(KIOSK_PIN_OVERRIDE_KEY, JSON.stringify(coords));
+    else localStorage.removeItem(KIOSK_PIN_OVERRIDE_KEY);
+  }, []);
+  // True when admin has activated click-to-place mode for the kiosk pin.
+  const [isEditingKioskPin, setIsEditingKioskPin] = useState(false);
+
+  const [fromLocation, setFromLocation] = useState(() => {
+    if (typeof window === 'undefined') return 'Main Lobby';
+    return localStorage.getItem(KIOSK_LOCATION_KEY) || 'Main Lobby';
+  });
   const [toLocation, setToLocation] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showRoute, setShowRoute] = useState(false);
@@ -86,6 +132,21 @@ export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProp
     mql.addEventListener('change', handler);
     return () => mql.removeEventListener('change', handler);
   }, []);
+
+  // On wide viewports the route always starts from the kiosk's physical
+  // location — keep `fromLocation` synced to `kioskLocation` whenever
+  // either changes (e.g. admin edits kiosk location, or user resizes from
+  // mobile to wide).
+  useEffect(() => {
+    if (isWideViewport) {
+      setFromLocation(kioskLocation);
+    }
+  }, [isWideViewport, kioskLocation]);
+
+  // (Body/html overflow lock removed — users wanted page scrolling restored
+  // so they can see the whole campus by scrolling, even before picking a
+  // destination. The square map asset is too tall for a 16:9 kiosk to fit
+  // in one viewport without losing horizontal real estate.)
 
   // Mobile breakpoint: drop the date entirely + show a shorter time format
   // so the header doesn't get crowded on phones.
@@ -141,6 +202,28 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     return {};
   };
   
+  // localStorage key tracking default-location IDs the user has renamed or
+  // deleted. The loader skips these during re-seeding so renames are sticky
+  // across page reloads.
+  const REMOVED_DEFAULTS_KEY = 'buksu-removed-defaults';
+  const getRemovedDefaultsSet = (): Set<string> => {
+    if (typeof window === 'undefined') return new Set();
+    try {
+      const raw = localStorage.getItem(REMOVED_DEFAULTS_KEY);
+      if (!raw) return new Set();
+      const arr = JSON.parse(raw);
+      return new Set(Array.isArray(arr) ? arr : []);
+    } catch {
+      return new Set();
+    }
+  };
+  const addRemovedDefault = (name: string) => {
+    if (typeof window === 'undefined') return;
+    const set = getRemovedDefaultsSet();
+    set.add(name);
+    localStorage.setItem(REMOVED_DEFAULTS_KEY, JSON.stringify(Array.from(set)));
+  };
+
   // Load unified map nodes from localStorage
   const loadMapNodesFromStorage = (): Record<string, MapNode> => {
     // Helper function to generate default nodes with all properties
@@ -282,9 +365,12 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
             merged[id] = loadedNode;
           }
         });
-        // Also add any default nodes that don't exist in localStorage
+        // Also add any default nodes that don't exist in localStorage —
+        // BUT skip ones the user has explicitly renamed/deleted, otherwise
+        // their rename would be undone on every reload.
+        const removedDefaults = getRemovedDefaultsSet();
         Object.keys(defaultNodes).forEach((id) => {
-          if (!merged[id]) {
+          if (!merged[id] && !removedDefaults.has(id)) {
             merged[id] = defaultNodes[id];
           }
         });
@@ -350,7 +436,16 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   const mapNodes = mapData.nodes;
   const customRoutePaths = mapData.customRoutes;
   const locationEdges = mapData.edges;
-  
+
+  // Default to zoom=1, pan=(0,0) on wide viewport so the entire campus is
+  // visible — locations near the edges were being clipped when we auto-zoomed
+  // to 1.4× on the kiosk pin. The pin's pulsing/bouncing animation already
+  // draws the eye without needing extra zoom. Users can still zoom in via
+  // the on-screen +/- buttons or pinch/wheel.
+
+  // (fittedMapSize logic removed — page-scroll restored, map sizes itself
+  // via aspectRatio + width:100% so it can extend below the viewport.)
+
   // Helper: Update node coordinates (used by all editors)
   const updateNodeFloorAndLocal = (nodeId: string, floor?: string, localNumber?: string) => {
     setMapData(prev => {
@@ -498,6 +593,11 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   // Remove a named location and clean up any edges or custom routes that
   // reference it. Used by the trash button in the Location Marker Editor.
   const deleteNamedLocation = (name: string) => {
+    // If a default location is ever deleted, mark it removed so the loader
+    // doesn't re-seed it on the next page load.
+    if (DEFAULT_LOCATIONS.includes(name)) {
+      addRemovedDefault(name);
+    }
     setMapData((prev) => {
       const { [name]: _removed, ...remainingNodes } = prev.nodes;
       // Drop edges touching this node.
@@ -521,6 +621,88 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       description: `"${name}" deleted.`,
       duration: 2000,
     });
+  };
+
+  // Rename a location everywhere it's referenced. Atomically rewrites the
+  // mapNodes key + node.id, every customRoute key (which is "from→to"),
+  // every edge's from/to, and any parentNodeId that points at the old name.
+  // Also fixes up kioskLocation / fromLocation / toLocation if they match.
+  const renameNamedLocation = (oldName: string, newNameRaw: string): boolean => {
+    const newName = newNameRaw.trim().replace(/\s+/g, ' ');
+    if (!newName) {
+      toast.error('Name required', { description: 'Type a new name.', duration: 2000 });
+      return false;
+    }
+    if (newName === oldName) {
+      // No-op rename — just exit cleanly.
+      return true;
+    }
+    if (!mapNodes[oldName]) {
+      toast.error('Location not found', { description: `"${oldName}" doesn't exist.`, duration: 2000 });
+      return false;
+    }
+    if (mapNodes[newName]) {
+      toast.error('Name already in use', {
+        description: `"${newName}" already exists on the map.`,
+        duration: 2500,
+      });
+      return false;
+    }
+
+    setMapData((prev) => {
+      // Rebuild nodes with the new key and updated id; also fix any
+      // parentNodeId references that point at the old name.
+      const nextNodes: Record<string, MapNode> = {};
+      Object.entries(prev.nodes).forEach(([key, node]) => {
+        const fixedParent = node.parentNodeId === oldName ? newName : node.parentNodeId;
+        if (key === oldName) {
+          nextNodes[newName] = { ...node, id: newName, parentNodeId: fixedParent };
+        } else {
+          nextNodes[key] = fixedParent === node.parentNodeId ? node : { ...node, parentNodeId: fixedParent };
+        }
+      });
+
+      // Rewrite edges referencing the old name.
+      const nextEdges = prev.edges.map((e) => ({
+        from: e.from === oldName ? newName : e.from,
+        to: e.to === oldName ? newName : e.to,
+      }));
+
+      // Rewrite custom-route keys ("from→to") on either side.
+      const nextRoutes: Record<string, Array<{ x: number; y: number }>> = {};
+      Object.entries(prev.customRoutes).forEach(([key, pts]) => {
+        const arrowIdx = key.indexOf('→');
+        if (arrowIdx === -1) {
+          nextRoutes[key] = pts;
+          return;
+        }
+        const from = key.slice(0, arrowIdx);
+        const to = key.slice(arrowIdx + 1);
+        const newFrom = from === oldName ? newName : from;
+        const newTo = to === oldName ? newName : to;
+        nextRoutes[`${newFrom}→${newTo}`] = pts;
+      });
+
+      return { nodes: nextNodes, edges: nextEdges, customRoutes: nextRoutes };
+    });
+
+    // Sync references that live outside mapData.
+    if (kioskLocation === oldName) setKioskLocation(newName);
+    if (fromLocation === oldName) setFromLocation(newName);
+    if (toLocation === oldName) setToLocation(newName);
+    if (editingLocation === oldName) setEditingLocation(newName);
+
+    // If the renamed location was a built-in default, record its old name as
+    // "removed" so the loader doesn't re-seed it on the next page load.
+    if (DEFAULT_LOCATIONS.includes(oldName)) {
+      addRemovedDefault(oldName);
+    }
+
+    toast.success('Location renamed', {
+      description: `"${oldName}" → "${newName}"`,
+      duration: 2500,
+    });
+    return true;
   };
 
   // Remove the last added node (undo in stamp mode)
@@ -700,6 +882,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   // Location Editor States
   const [isLocationEditMode, setIsLocationEditMode] = useState(false);
   const [editingLocation, setEditingLocation] = useState<string | null>(null);
+  // Inline-rename state for the location editor.
+  const [renamingLocation, setRenamingLocation] = useState<string | null>(null);
+  const [renameInputValue, setRenameInputValue] = useState('');
   const [locationEditorSearchQuery, setLocationEditorSearchQuery] = useState('');
 
   // Add Location flow — admin types a name, clicks the map to set position.
@@ -895,8 +1080,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     setIsLocationEditMode(false);
     setShowRoute(false);
 
-    // Clear route selections
-    setFromLocation('Main Gate');
+    // Clear route selections — reset to the configured kiosk location
+    setFromLocation(kioskLocation);
     setToLocation('');
 
     console.log('✅ All location markers cleared. Default nodes will not auto-load.');
@@ -910,6 +1095,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     nodes: mapData.nodes,
     customRoutes: mapData.customRoutes,
     edges: mapData.edges,
+    // Default-location IDs the user has renamed/deleted. Without this in
+    // the payload, other kiosks would re-seed the original default name
+    // on their next reload.
+    removedDefaults: Array.from(getRemovedDefaultsSet()),
   });
 
   // Validate + apply a parsed backup object to local state. Used by: Import
@@ -935,6 +1124,11 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       const nextEdges = Array.isArray(obj.edges)
         ? (obj.edges as Array<{ from: string; to: string }>)
         : null;
+      // List of default-location IDs the source kiosk had renamed/deleted.
+      // We mirror it locally so the loader doesn't re-seed those names here.
+      const nextRemovedDefaults = Array.isArray(obj.removedDefaults)
+        ? (obj.removedDefaults as unknown[]).filter((s): s is string => typeof s === 'string')
+        : null;
       if (!nextNodes && !nextRoutes && !nextEdges) {
         throw new Error('Payload does not contain recognizable wayfinder data');
       }
@@ -958,6 +1152,18 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
         customRoutes: nextRoutes ?? prev.customRoutes,
         edges: nextEdges ?? prev.edges,
       }));
+      // Mirror the source's removed-defaults list so this kiosk doesn't
+      // resurrect renamed defaults on next reload. Older payloads (no
+      // `removedDefaults` field) leave the local list untouched.
+      if (nextRemovedDefaults) {
+        if (typeof window !== 'undefined') {
+          if (nextRemovedDefaults.length > 0) {
+            localStorage.setItem(REMOVED_DEFAULTS_KEY, JSON.stringify(nextRemovedDefaults));
+          } else {
+            localStorage.removeItem(REMOVED_DEFAULTS_KEY);
+          }
+        }
+      }
       localStorage.removeItem('buksu-skip-defaults');
 
       if (!silent) {
@@ -1180,6 +1386,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
 
       // Escape → unwind the most recent mode in priority order.
       if (e.key === 'Escape') {
+        if (isEditingKioskPin) {
+          setIsEditingKioskPin(false);
+          return;
+        }
         if (stampMode) {
           setStampMode(null);
           return;
@@ -1208,7 +1418,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAdmin, stampMode, isDrawingMode, isLocationEditMode, showRoute, searchQuery]);
+  }, [isAdmin, stampMode, isDrawingMode, isLocationEditMode, isEditingKioskPin, showRoute, searchQuery]);
   // ---------------- /Keyboard shortcuts ----------------
 
   // Save edges to localStorage whenever they change
@@ -1357,6 +1567,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     'Mahogany Dormitory',
     'Mini Theater',
     'Main Gate',
+    'Main Lobby',
     'Motorpool',
     'MRF',
     'New Hostel',
@@ -1396,7 +1607,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       customNames.push(node.id);
     });
     customNames.sort((a, b) => a.localeCompare(b));
-    return [...DEFAULT_LOCATIONS, ...customNames];
+    // Drop default names whose node has been renamed away (so they don't
+    // appear as ghosts in the dropdown).
+    const validDefaults = DEFAULT_LOCATIONS.filter((name) => !!mapNodes[name]);
+    return [...validDefaults, ...customNames];
   }, [DEFAULT_LOCATIONS, mapNodes]);
 
   // Helper to normalize route keys (trim whitespace, normalize spaces, handle case)
@@ -1974,7 +2188,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   };
 
   const handleClear = () => {
-    setFromLocation('');
+    // On wide/kiosk viewport "From" is fixed to the kiosk — reset to it.
+    // On mobile users may have picked any starting point — clear to empty.
+    setFromLocation(isWideViewport ? kioskLocation : '');
     setToLocation('');
     setShowRoute(false);
     setZoomLevel(1);
@@ -2030,15 +2246,61 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     }
   };
 
+  // One-tap destination from the Popular Destinations tile grid.
+  // Sets the destination and immediately runs the route find — kiosk users
+  // shouldn't have to also tap "Find Route".
+  const handleQuickDestination = (loc: string) => {
+    if (!fromLocation || !loc || loc === fromLocation) return;
+    setToLocation(loc);
+    startTransition(() => {
+      setShowRoute(true);
+      setUiMode('navigation');
+      const destFloor = mapNodes[loc]?.floor;
+      if (destFloor) {
+        toast.success(`🏢 ${loc} is on the ${destFloor}`, {
+          description: `Follow the arrows on the map — then head to the floor above.`,
+          duration: 6000,
+        });
+      } else {
+        toast.success('Route found!', {
+          description: `From ${fromLocation} to ${loc}`,
+          duration: 2500,
+        });
+      }
+      setTimeout(() => {
+        mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+    });
+  };
+
+  // Curated set of popular kiosk destinations. Filtered to skip ones that
+  // were renamed/deleted by admin or that equal the kiosk location itself.
+  // `label` is the short display name on the tile (the full `name` is still
+  // used as the route destination + tooltip).
+  const POPULAR_DESTINATIONS: Array<{ name: string; label: string; Icon: React.ComponentType<{ size?: number; className?: string }> }> = useMemo(() => [
+    { name: 'University Library', label: 'Library', Icon: BookOpen },
+    { name: 'Administrative Building', label: 'Admin Bldg', Icon: Building2 },
+    { name: 'University Cafeteria', label: 'Cafeteria', Icon: UtensilsCrossed },
+    { name: 'University Gymnasium', label: 'Gymnasium', Icon: Dumbbell },
+    { name: "Registrar's office", label: 'Registrar', Icon: FileText },
+    { name: 'IP Museum', label: 'IP Museum', Icon: Landmark },
+  ], []);
+
+  const visiblePopularDestinations = useMemo(
+    () => POPULAR_DESTINATIONS.filter(({ name }) => name !== kioskLocation && !!mapNodes[name]),
+    [POPULAR_DESTINATIONS, kioskLocation, mapNodes],
+  );
+
   // Zoom handlers — wired to on-screen + / - buttons and pinch/wheel gestures.
   const ZOOM_MIN = 1;
   const ZOOM_MAX = 4;
+  const ZOOM_STEP_BUTTON = 0.2; // smaller per-click step → less jumpy
   const handleZoomIn = () => {
-    setZoomLevel((prev) => Math.min(ZOOM_MAX, prev + 0.35));
+    setZoomLevel((prev) => Math.min(ZOOM_MAX, prev + ZOOM_STEP_BUTTON));
   };
   const handleZoomOut = () => {
     setZoomLevel((prev) => {
-      const next = Math.max(ZOOM_MIN, prev - 0.35);
+      const next = Math.max(ZOOM_MIN, prev - ZOOM_STEP_BUTTON);
       // When we zoom all the way back out, reset the pan so the map is centered again
       if (next <= ZOOM_MIN) setPanPosition({ x: 0, y: 0 });
       return next;
@@ -2071,19 +2333,41 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   };
 
   // Mouse-wheel zoom (desktop) — scroll up to zoom in, down to zoom out.
-  // Active anywhere over the map container.
+  // Active anywhere over the map container. Wheel events come fast on
+  // touchpads/free-spinning mice (often >60Hz), so we coalesce all delta
+  // received during a single animation frame and apply one combined update.
+  // This stops the transition from being restarted mid-flight on every tick
+  // and feels much smoother.
+  const wheelDeltaRef = useRef(0);
+  const wheelRafRef = useRef<number | null>(null);
   const handleWheel = (e: React.WheelEvent) => {
-    // Only react when user is scrolling *vertically*. We don't want horizontal
-    // touchpad scroll (panning) to trigger a zoom.
+    // Only react when the user is scrolling *vertically*. We don't want
+    // horizontal touchpad scroll (panning) to trigger a zoom.
     if (Math.abs(e.deltaY) < Math.abs(e.deltaX)) return;
     e.preventDefault();
-    const delta = e.deltaY > 0 ? -0.2 : 0.2;
-    setZoomLevel((prev) => {
-      const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, prev + delta));
-      if (next <= ZOOM_MIN) setPanPosition({ x: 0, y: 0 });
-      return next;
+    // Smaller delta per tick → finer-grained, smoother feeling.
+    wheelDeltaRef.current += e.deltaY > 0 ? -0.08 : 0.08;
+    if (wheelRafRef.current !== null) return;
+    wheelRafRef.current = requestAnimationFrame(() => {
+      wheelRafRef.current = null;
+      const accum = wheelDeltaRef.current;
+      wheelDeltaRef.current = 0;
+      if (accum === 0) return;
+      setZoomLevel((prev) => {
+        const next = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, prev + accum));
+        if (next <= ZOOM_MIN) setPanPosition({ x: 0, y: 0 });
+        return next;
+      });
     });
   };
+  useEffect(() => {
+    return () => {
+      if (wheelRafRef.current !== null) {
+        cancelAnimationFrame(wheelRafRef.current);
+        wheelRafRef.current = null;
+      }
+    };
+  }, []);
 
   // Pinch-zoom support for touch devices. We track the initial distance
   // between two fingers and the zoom level at pinch start, then scale.
@@ -2301,6 +2585,26 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     const clickY = e.clientY - rect.top;
     const x = Math.max(0, Math.min(100, (clickX / rect.width) * 100));
     const y = Math.max(0, Math.min(100, (clickY / rect.height) * 100));
+    return { x, y };
+  };
+
+  // Same as getCoordinatesFromEvent, but inverts the current zoom/pan transform
+  // so the returned (x, y) is in the underlying viewBox space (0–100). Use this
+  // for click-to-place flows where the user has zoomed in or panned the map.
+  const getViewBoxCoordsFromEvent = (e: React.MouseEvent<HTMLDivElement>) => {
+    const container = e.currentTarget;
+    const rect = container.getBoundingClientRect();
+    const clickX = e.clientX - rect.left;
+    const clickY = e.clientY - rect.top;
+    // Visual transform: scale(z) translate(pan/z, pan/z) with origin center.
+    // Net effect on a point: visualPx = center + z * (origPx - center) + pan.
+    // Invert: origPx = (visualPx - pan - center) / z + center.
+    const cx = rect.width / 2;
+    const cy = rect.height / 2;
+    const ox = (clickX - panPosition.x - cx) / zoomLevel + cx;
+    const oy = (clickY - panPosition.y - cy) / zoomLevel + cy;
+    const x = Math.max(0, Math.min(100, (ox / rect.width) * 100));
+    const y = Math.max(0, Math.min(100, (oy / rect.height) * 100));
     return { x, y };
   };
 
@@ -2638,10 +2942,18 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
           : 'linear-gradient(127deg, #EEF2F8 0%, #F5F7FA 50%, #EEF2F8 100%)',
       }}
     >
-      {/* Header */}
+      {/* Header — sticky so it stays at the top of the viewport while the
+          page scrolls (so users always see the brand, time, dark mode, and
+          logout controls). Inline styles for sticky/top/z because this
+          project uses a pre-compiled Tailwind dump that doesn't include
+          those utilities. */}
       <div
         className="border-b backdrop-blur-xl transition-colors duration-300"
         style={{
+          // Pin the header to the top of the viewport while the page scrolls.
+          position: 'sticky',
+          top: 0,
+          zIndex: 50,
           background: darkMode
             ? 'linear-gradient(127deg, rgba(6, 11, 40, 0.94) 19%, rgba(10, 14, 35, 0.49) 76%)'
             : 'linear-gradient(127deg, rgba(255, 255, 255, 0.95) 19%, rgba(245, 247, 250, 0.85) 76%)',
@@ -2734,13 +3046,14 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       {/* Main Content */}
       <div className={`${uiMode === 'search' && isWideViewport ? '' : 'max-w-7xl mx-auto'} pb-32 md:pb-8 space-y-6 transition-all duration-300`} style={{
         overflowX: 'hidden',
-        width: uiMode === 'search' && isWideViewport ? 'calc(100% - 372px)' : '100%',
-        maxWidth: uiMode === 'search' && isWideViewport ? 'calc(100% - 372px)' : '1280px',
-        marginLeft: uiMode === 'search' && isWideViewport ? '372px' : 'auto',
+        width: uiMode === 'search' && isWideViewport ? 'calc(100% - 412px)' : '100%',
+        maxWidth: uiMode === 'search' && isWideViewport ? 'calc(100% - 412px)' : '1280px',
+        marginLeft: uiMode === 'search' && isWideViewport ? '412px' : 'auto',
         marginRight: 'auto',
         paddingLeft: 'clamp(1.25rem, 2.5vw, 3rem)',
         paddingRight: 'clamp(1.25rem, 2.5vw, 3rem)',
-        paddingTop: 'clamp(1.25rem, 2.2vh, 2.5rem)',
+        // 6px clears the page header's 3px gold accent line + a tiny gap on wide.
+        paddingTop: isWideViewport ? '0.5rem' : 'clamp(1.25rem, 2.2vh, 2.5rem)',
         boxSizing: 'border-box',
         position: 'relative',
         zIndex: 1
@@ -2753,8 +3066,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               ? 'fixed left-4 z-[9999] transition-all duration-300'
               : 'relative mx-auto transition-all duration-300'}
             style={{
-              width: isWideViewport ? '340px' : '100%',
-              maxWidth: isWideViewport ? '340px' : '480px',
+              width: isWideViewport ? '380px' : '100%',
+              maxWidth: isWideViewport ? '380px' : '480px',
               // Anchor below the header (header is ~clamp(1rem, 1.8vh, 1.75rem)
               // padding on each side + brand logo) so Quick Search never
               // overlaps the header text on any viewport size.
@@ -2852,69 +3165,238 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
             </div>
 
             <div className="space-y-4">
-              {/* FROM Input */}
+              {/* FROM / "You're Here" — kiosk badge on wide viewports, dropdown on mobile */}
               <div>
                 <label className="flex items-center gap-2 mb-2">
-                  <div className="w-5 h-5 rounded-full bg-gradient-to-r from-[#0075FF] to-[#00C6FF] flex items-center justify-center shadow-lg">
+                  <div
+                    className={`w-5 h-5 rounded-full flex items-center justify-center shadow-lg ${
+                      isWideViewport
+                        ? 'bg-gradient-to-r from-[#10B981] to-[#34D399]'
+                        : 'bg-gradient-to-r from-[#0075FF] to-[#00C6FF]'
+                    }`}
+                  >
                     <MapPin size={12} className="text-white" />
                   </div>
                   <span
                     className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] text-sm font-medium"
                     style={{ color: darkMode ? '#FFFFFF' : '#001C38' }}
                   >
-                    FROM (Starting Point)
+                    {isWideViewport ? "You're Here" : 'FROM (Starting Point)'}
                   </span>
+                  {isWideViewport && isAdmin && (
+                    <span
+                      className="ml-auto text-[10px] font-semibold uppercase tracking-wider px-2 py-0.5 rounded"
+                      style={{
+                        color: '#E6A13A',
+                        background: 'rgba(230, 161, 58, 0.15)',
+                        border: '1px solid rgba(230, 161, 58, 0.35)',
+                      }}
+                    >
+                      Admin: editable
+                    </span>
+                  )}
                 </label>
-                <Select value={fromLocation} onValueChange={setFromLocation}>
-                  <SelectTrigger
-                    className={`rounded-xl border transition-all hover:border-[#00C6FF]/50 focus:border-[#00C6FF]/50 ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
-                    style={{
-                      height: 'clamp(2.75rem, 3.5vw, 3.75rem)',
-                      fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
-                      background: darkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.95)',
-                      border: darkMode ? '1px solid rgba(226, 232, 240, 0.3)' : '1px solid rgba(0, 28, 56, 0.15)',
-                      boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
-                    }}
-                  >
-                    <SelectValue placeholder="Select starting point" />
-                  </SelectTrigger>
-                  <SelectContent
-                    className={`backdrop-blur-xl border ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
-                    style={{
-                      background: darkMode
-                        ? 'linear-gradient(127deg, rgba(6, 11, 40, 0.98) 19%, rgba(10, 14, 35, 0.95) 76%)'
-                        : 'rgba(255, 255, 255, 0.98)',
-                      border: darkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 28, 56, 0.15)',
-                    }}
-                  >
-                    {locations.map((location) => {
-                      const floorBadge = getFloorBadge(mapNodes[location]?.floor);
-                      return (
-                        <SelectItem
-                          key={location}
-                          value={location}
-                          className={darkMode ? 'text-white focus:bg-white/10' : 'text-[#001C38] focus:bg-[#001C38]/5'}
-                        >
-                          <span className="flex items-center gap-2 w-full">
-                            <span className="flex-1 min-w-0 truncate">{location}</span>
-                            {floorBadge && (
-                              <span
-                                className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-semibold"
-                                style={{
-                                  background: 'rgba(230, 161, 58, 0.2)',
-                                  color: '#E6A13A',
-                                  border: '1px solid rgba(230, 161, 58, 0.35)',
-                                }}
-                              >
-                                {floorBadge}
+
+                {isWideViewport ? (
+                  isAdmin ? (
+                    <Select value={kioskLocation} onValueChange={setKioskLocation}>
+                      <SelectTrigger
+                        className={`rounded-xl border transition-all hover:border-[#10B981]/50 focus:border-[#10B981]/50 ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
+                        style={{
+                          height: 'clamp(2.75rem, 3.5vw, 3.75rem)',
+                          fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
+                          background: darkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.95)',
+                          border: darkMode ? '1px solid rgba(226, 232, 240, 0.3)' : '1px solid rgba(0, 28, 56, 0.15)',
+                          boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
+                        }}
+                      >
+                        <SelectValue placeholder="Select kiosk location" />
+                      </SelectTrigger>
+                      <SelectContent
+                        className={`backdrop-blur-xl border ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
+                        style={{
+                          background: darkMode
+                            ? 'linear-gradient(127deg, rgba(6, 11, 40, 0.98) 19%, rgba(10, 14, 35, 0.95) 76%)'
+                            : 'rgba(255, 255, 255, 0.98)',
+                          border: darkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 28, 56, 0.15)',
+                        }}
+                      >
+                        {locations.map((location) => {
+                          const floorBadge = getFloorBadge(mapNodes[location]?.floor);
+                          return (
+                            <SelectItem
+                              key={location}
+                              value={location}
+                              className={darkMode ? 'text-white focus:bg-white/10' : 'text-[#001C38] focus:bg-[#001C38]/5'}
+                            >
+                              <span className="flex items-center gap-2 w-full">
+                                <span className="flex-1 min-w-0 truncate">{location}</span>
+                                {floorBadge && (
+                                  <span
+                                    className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-semibold"
+                                    style={{
+                                      background: 'rgba(230, 161, 58, 0.2)',
+                                      color: '#E6A13A',
+                                      border: '1px solid rgba(230, 161, 58, 0.35)',
+                                    }}
+                                  >
+                                    {floorBadge}
+                                  </span>
+                                )}
                               </span>
-                            )}
+                            </SelectItem>
+                          );
+                        })}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <div
+                      className="rounded-xl border flex items-center gap-3 px-4"
+                      style={{
+                        height: 'clamp(2.75rem, 3.5vw, 3.75rem)',
+                        background: darkMode
+                          ? 'linear-gradient(90deg, rgba(16, 185, 129, 0.18), rgba(15, 23, 42, 0.9))'
+                          : 'linear-gradient(90deg, rgba(16, 185, 129, 0.12), rgba(255, 255, 255, 0.95))',
+                        border: darkMode ? '1px solid rgba(16, 185, 129, 0.45)' : '1px solid rgba(16, 185, 129, 0.4)',
+                        boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
+                      }}
+                    >
+                      <span className="relative flex h-3 w-3 shrink-0">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10B981] opacity-75"></span>
+                        <span className="relative inline-flex rounded-full h-3 w-3 bg-[#10B981]"></span>
+                      </span>
+                      <span
+                        className="flex-1 min-w-0 truncate font-semibold"
+                        style={{
+                          fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
+                          color: darkMode ? '#FFFFFF' : '#001C38',
+                        }}
+                        title={kioskLocation}
+                      >
+                        {kioskLocation}
+                      </span>
+                      {(() => {
+                        const floorBadge = getFloorBadge(mapNodes[kioskLocation]?.floor);
+                        return floorBadge ? (
+                          <span
+                            className="shrink-0 px-2 py-0.5 rounded-md text-[10px] font-semibold"
+                            style={{
+                              background: 'rgba(230, 161, 58, 0.2)',
+                              color: '#E6A13A',
+                              border: '1px solid rgba(230, 161, 58, 0.35)',
+                            }}
+                            title={mapNodes[kioskLocation]?.floor}
+                          >
+                            {floorBadge}
                           </span>
-                        </SelectItem>
-                      );
-                    })}
-                  </SelectContent>
-                </Select>
+                        ) : null;
+                      })()}
+                    </div>
+                  )
+                ) : (
+                  <Select value={fromLocation} onValueChange={setFromLocation}>
+                    <SelectTrigger
+                      className={`rounded-xl border transition-all hover:border-[#00C6FF]/50 focus:border-[#00C6FF]/50 ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
+                      style={{
+                        height: 'clamp(2.75rem, 3.5vw, 3.75rem)',
+                        fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
+                        background: darkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.95)',
+                        border: darkMode ? '1px solid rgba(226, 232, 240, 0.3)' : '1px solid rgba(0, 28, 56, 0.15)',
+                        boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
+                      }}
+                    >
+                      <SelectValue placeholder="Select starting point" />
+                    </SelectTrigger>
+                    <SelectContent
+                      className={`backdrop-blur-xl border ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
+                      style={{
+                        background: darkMode
+                          ? 'linear-gradient(127deg, rgba(6, 11, 40, 0.98) 19%, rgba(10, 14, 35, 0.95) 76%)'
+                          : 'rgba(255, 255, 255, 0.98)',
+                        border: darkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 28, 56, 0.15)',
+                      }}
+                    >
+                      {locations.map((location) => {
+                        const floorBadge = getFloorBadge(mapNodes[location]?.floor);
+                        return (
+                          <SelectItem
+                            key={location}
+                            value={location}
+                            className={darkMode ? 'text-white focus:bg-white/10' : 'text-[#001C38] focus:bg-[#001C38]/5'}
+                          >
+                            <span className="flex items-center gap-2 w-full">
+                              <span className="flex-1 min-w-0 truncate">{location}</span>
+                              {floorBadge && (
+                                <span
+                                  className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-semibold"
+                                  style={{
+                                    background: 'rgba(230, 161, 58, 0.2)',
+                                    color: '#E6A13A',
+                                    border: '1px solid rgba(230, 161, 58, 0.35)',
+                                  }}
+                                >
+                                  {floorBadge}
+                                </span>
+                              )}
+                            </span>
+                          </SelectItem>
+                        );
+                      })}
+                    </SelectContent>
+                  </Select>
+                )}
+
+                {/* Admin click-to-place controls — pin the green "You're Here"
+                    marker anywhere on the map, independent of the kiosk node's
+                    coordinates. Routing graph is unaffected. */}
+                {isWideViewport && isAdmin && (
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <Button
+                      onClick={() => setIsEditingKioskPin((v) => !v)}
+                      variant={isEditingKioskPin ? 'default' : 'outline'}
+                      size="sm"
+                      className="rounded-lg text-xs"
+                      style={
+                        isEditingKioskPin
+                          ? {
+                              background: '#E6A13A',
+                              color: '#FFFFFF',
+                              borderColor: '#E6A13A',
+                              boxShadow: '0 4px 6px rgba(230, 161, 58, 0.3)',
+                            }
+                          : {
+                              background: darkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.95)',
+                              border: darkMode
+                                ? '1px solid rgba(16, 185, 129, 0.45)'
+                                : '1px solid rgba(16, 185, 129, 0.4)',
+                              color: darkMode ? '#FFFFFF' : '#001C38',
+                            }
+                      }
+                    >
+                      <MapPin size={14} className="mr-1.5" />
+                      {isEditingKioskPin ? 'Click on map… (Esc to cancel)' : 'Pin Kiosk Location'}
+                    </Button>
+                    {kioskPinOverride && !isEditingKioskPin && (
+                      <Button
+                        onClick={() => {
+                          setKioskPinOverride(null);
+                          toast.info('Reverted to building coordinates', { duration: 2000 });
+                        }}
+                        variant="outline"
+                        size="sm"
+                        className={`rounded-lg text-xs ${darkMode ? 'text-white hover:bg-white/10' : 'text-[#001C38] hover:bg-[#001C38]/5'}`}
+                        style={{
+                          background: darkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.95)',
+                          border: darkMode ? '1px solid rgba(255, 255, 255, 0.2)' : '1px solid rgba(0, 28, 56, 0.2)',
+                        }}
+                        title="Use the kiosk node's building coordinates"
+                      >
+                        <RotateCcw size={14} className="mr-1.5" />
+                        Use building coords
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* TO Input */}
@@ -2983,20 +3465,24 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               </div>
             </div>
 
-            {/* Swap Button */}
-            <div className="flex justify-center mt-4 mb-6">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={handleSwapLocations}
-                className="rounded-full transition-all duration-200 bg-gradient-to-r from-[#0075FF] to-[#00C6FF] hover:scale-110 text-white shadow-lg"
-                style={{
-                  boxShadow: '0 4px 6px rgba(0, 117, 255, 0.3)',
-                }}
-              >
-                <ArrowLeftRight size={18} />
-              </Button>
-            </div>
+            {/* Swap Button — only meaningful on mobile (kiosk origin is fixed) */}
+            {!isWideViewport ? (
+              <div className="flex justify-center mt-4 mb-6">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleSwapLocations}
+                  className="rounded-full transition-all duration-200 bg-gradient-to-r from-[#0075FF] to-[#00C6FF] hover:scale-110 text-white shadow-lg"
+                  style={{
+                    boxShadow: '0 4px 6px rgba(0, 117, 255, 0.3)',
+                  }}
+                >
+                  <ArrowLeftRight size={18} />
+                </Button>
+              </div>
+            ) : (
+              <div className="mt-6" />
+            )}
 
             {/* Action Buttons */}
             <div className="flex gap-3">
@@ -3039,6 +3525,80 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 Clear
               </Button>
             </div>
+
+            {/* Popular Destinations - One-tap tiles for kiosk users */}
+            {visiblePopularDestinations.length > 0 && (
+              <div className="mt-6">
+                <label className="flex items-center gap-2 mb-3">
+                  <div className="w-5 h-5 rounded-full bg-gradient-to-r from-[#E6A13A] to-[#FFD700] flex items-center justify-center shadow-lg">
+                    <Sparkles size={12} className="text-white" />
+                  </div>
+                  <span
+                    className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] text-sm font-medium"
+                    style={{ color: darkMode ? '#FFFFFF' : '#001C38' }}
+                  >
+                    Popular Destinations
+                  </span>
+                </label>
+                <div className="grid grid-cols-3 gap-2">
+                  {visiblePopularDestinations.map(({ name, label, Icon }) => {
+                    const floorBadge = getFloorBadge(mapNodes[name]?.floor);
+                    return (
+                      <button
+                        key={name}
+                        onClick={() => handleQuickDestination(name)}
+                        disabled={isDrawingMode || isPending}
+                        className="relative rounded-xl border transition-all flex flex-col items-center justify-center gap-2 px-2 py-3 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 active:scale-95"
+                        style={{
+                          minHeight: 'clamp(5.25rem, 6.5vw, 6.5rem)',
+                          background: darkMode ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.95)',
+                          border: darkMode ? '1px solid rgba(0, 198, 255, 0.25)' : '1px solid rgba(0, 117, 255, 0.18)',
+                          boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
+                          color: darkMode ? '#FFFFFF' : '#001C38',
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!e.currentTarget.disabled) {
+                            e.currentTarget.style.borderColor = '#00C6FF';
+                            e.currentTarget.style.boxShadow = darkMode
+                              ? '0 8px 14px rgba(0, 198, 255, 0.25)'
+                              : '0 6px 12px rgba(0, 117, 255, 0.18)';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.borderColor = darkMode
+                            ? 'rgba(0, 198, 255, 0.25)'
+                            : 'rgba(0, 117, 255, 0.18)';
+                          e.currentTarget.style.boxShadow = darkMode
+                            ? '0 4px 6px rgba(0, 0, 0, 0.3)'
+                            : '0 2px 4px rgba(0, 28, 56, 0.08)';
+                        }}
+                        title={name}
+                      >
+                        {floorBadge && (
+                          <span
+                            className="absolute top-1 right-1 px-1 py-0.5 rounded text-[9px] font-semibold leading-none"
+                            style={{
+                              background: 'rgba(230, 161, 58, 0.2)',
+                              color: '#E6A13A',
+                              border: '1px solid rgba(230, 161, 58, 0.35)',
+                            }}
+                          >
+                            {floorBadge}
+                          </span>
+                        )}
+                        <Icon size={22} className="text-[#00C6FF] shrink-0" />
+                        <span
+                          className="text-[11px] leading-tight font-medium text-center truncate w-full"
+                          style={{ color: darkMode ? '#FFFFFF' : '#001C38' }}
+                        >
+                          {label}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Category Filter Buttons - Quick Access */}
             <div className="mt-6">
@@ -3448,7 +4008,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               style={{
                 aspectRatio: imageAspectRatio ? `${imageAspectRatio}` : undefined,
                 height: imageAspectRatio ? undefined : '700px',
-                cursor: pendingNewLocationName ? 'crosshair' : (stampMode ? 'crosshair' : (isLocationEditMode ? 'crosshair' : (isDrawingMode ? 'crosshair' : (zoomLevel > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default')))),
+                cursor: isEditingKioskPin ? 'crosshair' : (pendingNewLocationName ? 'crosshair' : (stampMode ? 'crosshair' : (isLocationEditMode ? 'crosshair' : (isDrawingMode ? 'crosshair' : (zoomLevel > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default'))))),
                 position: 'relative',
                 zIndex: isLocationEditMode ? 10 : 1,
                 maxWidth: '100%',
@@ -3506,6 +4066,19 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   }
                   return;
                 }
+                // Admin click-to-place: set the kiosk pin at the clicked spot.
+                if (isAdmin && isEditingKioskPin) {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const coords = getViewBoxCoordsFromEvent(e);
+                  setKioskPinOverride(coords);
+                  setIsEditingKioskPin(false);
+                  toast.success('Kiosk pin moved', {
+                    description: `New position: ${coords.x.toFixed(1)}, ${coords.y.toFixed(1)}`,
+                    duration: 2000,
+                  });
+                  return;
+                }
                 // In location edit mode, handle click here too (as backup to mouseDown)
                 if (isLocationEditMode && editingLocation) {
                   e.preventDefault();
@@ -3531,6 +4104,24 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               }}
               onContextMenu={handleMapRightClick}
             >
+              {/* Kiosk pin edit-mode banner */}
+              {isEditingKioskPin && (
+                <div
+                  className="absolute top-3 left-1/2 -translate-x-1/2 z-[9000] rounded-full px-5 py-2 flex items-center gap-2 shadow-lg pointer-events-none"
+                  style={{
+                    background: 'linear-gradient(90deg, #E6A13A, #FFD700)',
+                    color: '#001C38',
+                    fontWeight: 600,
+                    fontSize: 'clamp(0.875rem, 1vw, 1rem)',
+                    boxShadow: '0 6px 16px rgba(230, 161, 58, 0.4)',
+                  }}
+                >
+                  <MapPin size={16} />
+                  Click anywhere on the map to set the kiosk position
+                  <span className="opacity-70 text-xs ml-2">(Esc to cancel)</span>
+                </div>
+              )}
+
               <img
                 ref={mapImageRef}
                 src={mapImageSrc}
@@ -3539,6 +4130,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 style={{
                   transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
                   transformOrigin: 'center center',
+                  // Promote to a compositor layer so zoom transitions are
+                  // GPU-accelerated and don't repaint the campus image.
+                  willChange: 'transform',
+                  backfaceVisibility: 'hidden',
                   display: imageLoadError ? 'none' : 'block'
                 }}
                 draggable={false}
@@ -3604,11 +4199,159 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 style={{
                   transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
                   transformOrigin: 'center center',
-                  zIndex: 2
+                  willChange: 'transform',
+                  zIndex: 2,
                 }}
               >
                 {facilityMarkers}
               </svg>
+
+              {/* "You're Here" kiosk pin — always visible on wide/kiosk viewports.
+                  Doubles as the route start pin so we don't render a duplicate
+                  green pin inside the route SVG below. Uses the admin-set
+                  override coords if present, else falls back to the kiosk
+                  node's coordinates. */}
+              {isWideViewport && (kioskPinOverride || mapNodes[kioskLocation]?.coordinates) && (
+                <svg
+                  className={`absolute inset-0 w-full h-full pointer-events-none ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
+                  viewBox="0 0 100 100"
+                  preserveAspectRatio="none"
+                  style={{
+                    transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
+                    transformOrigin: 'center center',
+                    willChange: 'transform',
+                    zIndex: 5,
+                  }}
+                >
+                  <defs>
+                    {/* Soft green halo behind the pin */}
+                    <filter id="kioskPinGlow" x="-100%" y="-100%" width="300%" height="300%">
+                      <feGaussianBlur stdDeviation="0.55" result="blur" />
+                      <feFlood floodColor="#10B981" floodOpacity="0.55" />
+                      <feComposite in2="blur" operator="in" />
+                      <feMerge>
+                        <feMergeNode />
+                        <feMergeNode in="SourceGraphic" />
+                      </feMerge>
+                    </filter>
+                    {/* Radial gradient on the pin head for depth */}
+                    <radialGradient id="kioskPinFill" cx="35%" cy="30%" r="70%">
+                      <stop offset="0%" stopColor="#34D399" />
+                      <stop offset="55%" stopColor="#10B981" />
+                      <stop offset="100%" stopColor="#047857" />
+                    </radialGradient>
+                  </defs>
+                  {(() => {
+                    const coords = kioskPinOverride ?? mapNodes[kioskLocation].coordinates;
+                    const { x, y } = coords;
+                    // Speech-bubble dimensions in viewBox units
+                    const bw = 9; // bubble width
+                    const bh = 3; // bubble height
+                    const br = 0.7; // corner radius
+                    const bx = x - bw / 2;
+                    const by = y - 5.6; // sits above the pin with breathing room
+                    const tailHalf = 0.7;
+                    return (
+                      <g>
+                        {/* Triple-ring stagger pulse */}
+                        <circle cx={x} cy={y} r="1.8" fill="#10B981" opacity="0.35">
+                          <animate attributeName="r" values="1.8;3.6;1.8" dur="2.4s" repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0.35;0;0.35" dur="2.4s" repeatCount="indefinite" />
+                        </circle>
+                        <circle cx={x} cy={y} r="1.8" fill="#10B981" opacity="0.35">
+                          <animate attributeName="r" values="1.8;3.6;1.8" dur="2.4s" begin="0.6s" repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0.35;0;0.35" dur="2.4s" begin="0.6s" repeatCount="indefinite" />
+                        </circle>
+                        <circle cx={x} cy={y} r="1.8" fill="#10B981" opacity="0.35">
+                          <animate attributeName="r" values="1.8;3.6;1.8" dur="2.4s" begin="1.2s" repeatCount="indefinite" />
+                          <animate attributeName="opacity" values="0.35;0;0.35" dur="2.4s" begin="1.2s" repeatCount="indefinite" />
+                        </circle>
+                        {/* Inner solid halo */}
+                        <circle cx={x} cy={y} r="1.3" fill="#10B981" opacity="0.45" />
+
+                        {/* Pin marker — gentle 2s bounce + glow */}
+                        <g filter="url(#kioskPinGlow)">
+                          <animateTransform
+                            attributeName="transform"
+                            type="translate"
+                            values="0 0; 0 -0.35; 0 0"
+                            dur="2.2s"
+                            repeatCount="indefinite"
+                            additive="sum"
+                          />
+                          <g transform={`translate(${x}, ${y}) scale(1.6)`}>
+                            <path
+                              d="M 0 -1.3 C -0.85 -1.3 -0.92 -0.32 0 0 C 0.92 -0.32 0.85 -1.3 0 -1.3 Z"
+                              fill="url(#kioskPinFill)"
+                              stroke="white"
+                              strokeWidth="0.09"
+                              filter="drop-shadow(0px 0.18px 0.3px rgba(0,0,0,0.55))"
+                            />
+                            {/* White circle inside pin head — frame for the person glyph */}
+                            <circle cx="0" cy="-0.7" r="0.42" fill="white" />
+                            {/* Walking-person glyph (head + body + legs + arm) */}
+                            <g fill="#10B981" stroke="#10B981" strokeWidth="0.04" strokeLinecap="round">
+                              {/* head */}
+                              <circle cx="0" cy="-0.92" r="0.1" />
+                              {/* body */}
+                              <line x1="0" y1="-0.82" x2="0.04" y2="-0.6" />
+                              {/* legs */}
+                              <line x1="0.04" y1="-0.6" x2="-0.09" y2="-0.45" />
+                              <line x1="0.04" y1="-0.6" x2="0.13" y2="-0.45" />
+                              {/* arm */}
+                              <line x1="0.02" y1="-0.74" x2="-0.1" y2="-0.66" />
+                            </g>
+                          </g>
+                        </g>
+
+                        {/* Speech-bubble label */}
+                        <g style={{ filter: 'drop-shadow(0 0.18px 0.3px rgba(0,0,0,0.5))' }}>
+                          {/* Bubble body */}
+                          <rect
+                            x={bx}
+                            y={by}
+                            width={bw}
+                            height={bh}
+                            rx={br}
+                            ry={br}
+                            fill="white"
+                            stroke="#10B981"
+                            strokeWidth="0.12"
+                          />
+                          {/* Tail pointing at the pin */}
+                          <path
+                            d={`M ${x - tailHalf} ${by + bh} L ${x} ${by + bh + 0.85} L ${x + tailHalf} ${by + bh} Z`}
+                            fill="white"
+                            stroke="#10B981"
+                            strokeWidth="0.12"
+                          />
+                          {/* Tail seam mask — hides the bubble's bottom border behind the tail */}
+                          <line
+                            x1={x - tailHalf}
+                            y1={by + bh}
+                            x2={x + tailHalf}
+                            y2={by + bh}
+                            stroke="white"
+                            strokeWidth="0.18"
+                          />
+                          <text
+                            x={x}
+                            y={by + bh / 2 + 0.05}
+                            fill="#047857"
+                            fontSize="1.4"
+                            fontWeight="bold"
+                            textAnchor="middle"
+                            dominantBaseline="middle"
+                            style={{ letterSpacing: '0.02em' }}
+                          >
+                            You're Here.
+                          </text>
+                        </g>
+                      </g>
+                    );
+                  })()}
+                </svg>
+              )}
 
               {/* Location Markers Overlay - Only visible in edit mode to reduce clutter */}
               {isLocationEditMode && (
@@ -3857,7 +4600,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     position: 'absolute',
                     zIndex: 9999,
                     transform: `scale(${zoomLevel}) translate(${panPosition.x / zoomLevel}px, ${panPosition.y / zoomLevel}px)`,
-                    transformOrigin: 'center center'
+                    transformOrigin: 'center center',
+                    willChange: 'transform',
                   }}
                 >
                   {/* Define arrow marker for direction indicators */}
@@ -4002,6 +4746,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
 
                   {/* Start Point (Green Pin) */}
                   {(() => {
+                    // On wide/kiosk viewports the always-visible "You're Here"
+                    // kiosk pin renders the start marker — skip the duplicate.
+                    if (isWideViewport && fromLocation === kioskLocation) return null;
                     // ALWAYS use current mapNodes coordinates to match yellow marker (Location Marker Editor)
                     // This ensures the green dot follows the yellow marker exactly, even if routeData hasn't recalculated
                     const currentNode = mapNodes[fromLocation];
@@ -4505,18 +5252,46 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     className={`flex flex-col p-4 rounded-lg gap-3 ${
                       editingLocation === location
                         ? 'bg-[#E6A13A]/20 border-2 border-[#E6A13A]'
+                        : renamingLocation === location
+                        ? 'bg-[#0075FF]/15 border-2 border-[#00C6FF]'
                         : darkMode ? 'bg-[#3d4858]' : 'bg-gray-100'
                     }`}
                   >
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-3 mb-2">
-                          <MapPin size={16} className="text-[#E6A13A]" />
-                          <span className={`${darkMode ? 'text-white' : 'text-gray-900'}`}>
-                            {location}
-                          </span>
-                          {isCustomLocation && (
-                            <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${darkMode ? 'bg-[#00C6FF]/15 text-[#00C6FF]' : 'bg-[#0075FF]/15 text-[#0075FF]'}`}>
+                          <MapPin size={16} className="text-[#E6A13A] shrink-0" />
+                          {renamingLocation === location ? (
+                            <input
+                              type="text"
+                              autoFocus
+                              value={renameInputValue}
+                              onChange={(e) => setRenameInputValue(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  if (renameNamedLocation(location, renameInputValue)) {
+                                    setRenamingLocation(null);
+                                    setRenameInputValue('');
+                                  }
+                                } else if (e.key === 'Escape') {
+                                  setRenamingLocation(null);
+                                  setRenameInputValue('');
+                                }
+                              }}
+                              className={`flex-1 min-w-0 px-3 py-1.5 rounded-lg border text-sm ${
+                                darkMode
+                                  ? 'bg-[#2D3748] border-gray-600 text-white placeholder-gray-500 focus:border-[#00C6FF] focus:ring-1 focus:ring-[#00C6FF]/30'
+                                  : 'bg-white border-gray-300 text-gray-900 placeholder-gray-400 focus:border-[#003566] focus:ring-1 focus:ring-[#003566]/20'
+                              } outline-none transition-all`}
+                              placeholder="New name"
+                            />
+                          ) : (
+                            <span className={`truncate ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+                              {location}
+                            </span>
+                          )}
+                          {isCustomLocation && renamingLocation !== location && (
+                            <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full ${darkMode ? 'bg-[#00C6FF]/15 text-[#00C6FF]' : 'bg-[#0075FF]/15 text-[#0075FF]'}`}>
                               Custom
                             </span>
                           )}
@@ -4525,42 +5300,91 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                           X: {coords?.x.toFixed(1)}% • Y: {coords?.y.toFixed(1)}%
                         </div>
                       </div>
-                      <div className="flex gap-2 items-center">
-                        <Button
-                          onClick={() => {
-                            setEditingLocation(location);
-                            setIsLocationEditMode(true);
-                            setIsDrawingMode(false);
-                            setShowRoute(false);
-                          }}
-                          className={`${
-                            editingLocation === location
-                              ? 'bg-[#E6A13A] text-white'
-                              : darkMode
-                              ? 'bg-[#C5D4E8] hover:bg-[#B5C4D8] text-gray-800'
-                              : 'bg-[#003566] hover:bg-[#002347] text-white'
-                          }`}
-                        >
-                          {editingLocation === location ? 'Click on Map' : 'Edit Position'}
-                        </Button>
-                        {isCustomLocation && (
-                          <Button
-                            onClick={() => {
-                              if (window.confirm(`Delete "${location}"? This removes the pin, any edges, and any custom routes tied to it. This cannot be undone.`)) {
+                      <div className="flex gap-2 items-center shrink-0">
+                        {renamingLocation === location ? (
+                          <>
+                            <Button
+                              onClick={() => {
+                                if (renameNamedLocation(location, renameInputValue)) {
+                                  setRenamingLocation(null);
+                                  setRenameInputValue('');
+                                }
+                              }}
+                              size="icon"
+                              aria-label="Save rename"
+                              className="bg-[#10B981] hover:bg-[#059669] text-white"
+                            >
+                              <Check size={16} />
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                setRenamingLocation(null);
+                                setRenameInputValue('');
+                              }}
+                              variant="outline"
+                              size="icon"
+                              aria-label="Cancel rename"
+                              className={darkMode ? 'border-gray-500 text-gray-300 hover:bg-gray-700' : 'border-gray-400 text-gray-700 hover:bg-gray-100'}
+                            >
+                              <X size={16} />
+                            </Button>
+                          </>
+                        ) : (
+                          <>
+                            <Button
+                              onClick={() => {
+                                setEditingLocation(location);
+                                setIsLocationEditMode(true);
+                                setIsDrawingMode(false);
+                                setShowRoute(false);
+                              }}
+                              className={`${
+                                editingLocation === location
+                                  ? 'bg-[#E6A13A] text-white'
+                                  : darkMode
+                                  ? 'bg-[#C5D4E8] hover:bg-[#B5C4D8] text-gray-800'
+                                  : 'bg-[#003566] hover:bg-[#002347] text-white'
+                              }`}
+                            >
+                              {editingLocation === location ? 'Click on Map' : 'Edit Position'}
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                setRenamingLocation(location);
+                                setRenameInputValue(location);
                                 if (editingLocation === location) {
                                   setEditingLocation(null);
                                   setIsLocationEditMode(false);
                                 }
-                                deleteNamedLocation(location);
-                              }
-                            }}
-                            variant="outline"
-                            size="icon"
-                            aria-label={`Delete ${location}`}
-                            className={darkMode ? 'border-red-600/60 text-red-400 hover:bg-red-900/20' : 'border-red-600 text-red-600 hover:bg-red-50'}
-                          >
-                            <Trash2 size={16} />
-                          </Button>
+                              }}
+                              variant="outline"
+                              size="icon"
+                              aria-label={`Rename ${location}`}
+                              title="Rename location"
+                              className={darkMode ? 'border-[#00C6FF]/60 text-[#00C6FF] hover:bg-[#00C6FF]/10' : 'border-[#0075FF] text-[#0075FF] hover:bg-[#0075FF]/10'}
+                            >
+                              <Pencil size={16} />
+                            </Button>
+                            {isCustomLocation && (
+                              <Button
+                                onClick={() => {
+                                  if (window.confirm(`Delete "${location}"? This removes the pin, any edges, and any custom routes tied to it. This cannot be undone.`)) {
+                                    if (editingLocation === location) {
+                                      setEditingLocation(null);
+                                      setIsLocationEditMode(false);
+                                    }
+                                    deleteNamedLocation(location);
+                                  }
+                                }}
+                                variant="outline"
+                                size="icon"
+                                aria-label={`Delete ${location}`}
+                                className={darkMode ? 'border-red-600/60 text-red-400 hover:bg-red-900/20' : 'border-red-600 text-red-600 hover:bg-red-50'}
+                              >
+                                <Trash2 size={16} />
+                              </Button>
+                            )}
+                          </>
                         )}
                       </div>
                     </div>
