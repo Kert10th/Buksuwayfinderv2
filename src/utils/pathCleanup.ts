@@ -132,7 +132,10 @@ export const cleanupPath = (
   points: Point[],
   options: { simplifyTolerance?: number; snapThresholdDeg?: number } = {},
 ): Point[] => {
-  const { simplifyTolerance = 0.8, snapThresholdDeg = 12 } = options;
+  // snapThresholdDeg defaults to 0 (off): snapAnglesToGrid computes each
+  // adjusted point off the *previous adjusted* point, so non-zero values
+  // can compound drift and warp a hand-drawn path's overall direction.
+  const { simplifyTolerance = 0.4, snapThresholdDeg = 0 } = options;
   if (points.length < 3) return points.slice();
   const simplified = simplifyPath(points, simplifyTolerance);
   const snapped = snapAnglesToGrid(simplified, snapThresholdDeg);

@@ -1879,12 +1879,14 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       console.log('    end:', finalWaypoints[finalWaypoints.length - 1]);
       console.log('    waypoints count:', finalWaypoints.length);
 
-      // Apply Douglas-Peucker simplification + angle snapping so hand-drawn
-      // paths display with clean horizontal/vertical segments. Legacy wobbly
-      // routes get tidied automatically — admin never has to redraw.
+      // Apply Douglas-Peucker simplification only — strips redundant/noisy
+      // points from the drawing without altering direction. Angle snapping
+      // is disabled because cumulative snap errors can drift a hand-drawn
+      // path far from where the admin actually drew it (each snapped point
+      // is computed off the previous *snapped* point, so error compounds).
       const cleanedWaypoints = cleanupPath(finalWaypoints, {
-        simplifyTolerance: 0.8,
-        snapThresholdDeg: 12,
+        simplifyTolerance: 0.4,
+        snapThresholdDeg: 0,
       });
       console.log('  Cleaned waypoints:', finalWaypoints.length, '->', cleanedWaypoints.length);
 
