@@ -4057,19 +4057,21 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   const count = categoryCounts[key];
                   const isMuted = count === 0 && !isActive;
                   const iconDelay = `${idx * 0.3}s`;
-                  // Frosted-glass styling, color-tinted per category. Inactive:
-                  // subtle gradient from the category color into the panel
-                  // background, with backdrop-blur for the glass effect.
-                  // Active: bolder gradient + colored shadow.
+                  // Frosted-glass styling. Inactive chips are kept visually
+                  // neutral (no per-category tinting on the row) so the panel
+                  // doesn't feel busy with five colors at once. The icon tile
+                  // is the only color hint; on hover, a faint color wash
+                  // foreshadows the active state. Active state fills the row
+                  // with the full category gradient.
                   const inactiveBg = darkMode
-                    ? `linear-gradient(135deg, ${activeBg}24 0%, rgba(15, 23, 42, 0.45) 100%)`
-                    : `linear-gradient(135deg, ${activeBg}26 0%, rgba(255, 255, 255, 0.55) 100%)`;
+                    ? 'linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0%, rgba(15, 23, 42, 0.45) 100%)'
+                    : 'linear-gradient(135deg, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0.5) 100%)';
                   const inactiveBorder = darkMode
-                    ? `1px solid ${activeBg}3D`
-                    : `1px solid ${activeBg}4D`;
+                    ? '1px solid rgba(255, 255, 255, 0.10)'
+                    : '1px solid rgba(0, 28, 56, 0.10)';
                   const inactiveShadow = darkMode
-                    ? `inset 0 1px 0 rgba(255,255,255,0.06), 0 3px 10px rgba(0, 0, 0, 0.20)`
-                    : `inset 0 1px 0 rgba(255,255,255,0.6), 0 3px 10px ${activeBg}14`;
+                    ? 'inset 0 1px 0 rgba(255,255,255,0.05), 0 3px 10px rgba(0, 0, 0, 0.18)'
+                    : 'inset 0 1px 0 rgba(255,255,255,0.6), 0 3px 10px rgba(0, 28, 56, 0.06)';
                   const activeBgGrad = `linear-gradient(135deg, ${activeBg} 0%, ${activeHover} 100%)`;
                   const activeShadow = `0 6px 18px ${activeBg}55, inset 0 1px 0 rgba(255,255,255,0.25)`;
                   return (
@@ -4098,13 +4100,15 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                         if (isActive) {
                           e.currentTarget.style.background = `linear-gradient(135deg, ${activeHover} 0%, ${activeBg} 100%)`;
                         } else {
+                          // Faint color wash on hover — foreshadows the
+                          // category color the user is about to activate.
                           e.currentTarget.style.background = darkMode
-                            ? `linear-gradient(135deg, ${activeBg}3D 0%, rgba(15, 23, 42, 0.55) 100%)`
-                            : `linear-gradient(135deg, ${activeBg}3D 0%, rgba(255, 255, 255, 0.7) 100%)`;
-                          e.currentTarget.style.borderColor = `${activeBg}80`;
+                            ? `linear-gradient(135deg, ${activeBg}1F 0%, rgba(15, 23, 42, 0.5) 100%)`
+                            : `linear-gradient(135deg, ${activeBg}1A 0%, rgba(255, 255, 255, 0.65) 100%)`;
+                          e.currentTarget.style.borderColor = `${activeBg}55`;
                           e.currentTarget.style.boxShadow = darkMode
-                            ? `inset 0 1px 0 rgba(255,255,255,0.08), 0 6px 16px ${activeBg}30`
-                            : `inset 0 1px 0 rgba(255,255,255,0.7), 0 6px 16px ${activeBg}28`;
+                            ? `inset 0 1px 0 rgba(255,255,255,0.07), 0 6px 16px ${activeBg}26`
+                            : `inset 0 1px 0 rgba(255,255,255,0.7), 0 6px 14px ${activeBg}22`;
                         }
                       }}
                       onMouseLeave={(e) => {
@@ -4112,7 +4116,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                           e.currentTarget.style.background = activeBgGrad;
                         } else {
                           e.currentTarget.style.background = inactiveBg;
-                          e.currentTarget.style.borderColor = darkMode ? `${activeBg}3D` : `${activeBg}4D`;
+                          e.currentTarget.style.borderColor = darkMode
+                            ? 'rgba(255, 255, 255, 0.10)'
+                            : 'rgba(0, 28, 56, 0.10)';
                           e.currentTarget.style.boxShadow = inactiveShadow;
                         }
                         e.currentTarget.style.transform = 'scale(1)';
@@ -4583,22 +4589,19 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
 
         {/* MAP DISPLAY */}
         <div className={`${darkMode ? 'bg-[#1E293B]' : 'bg-white'} rounded-2xl overflow-hidden`} style={{ zIndex: 1, position: 'relative', maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
-          <div
-            className="flex items-center justify-between"
-            style={{
-              paddingLeft: 'clamp(1.25rem, 2vw, 2.5rem)',
-              paddingRight: 'clamp(1.25rem, 2vw, 2.5rem)',
-              paddingTop: 'clamp(1rem, 1.5vh, 1.75rem)',
-              paddingBottom: 'clamp(1rem, 1.5vh, 1.75rem)',
-            }}
-          >
-            <h2
-              className={`font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
-              style={{ fontSize: 'clamp(1.125rem, 1.4vw, 1.75rem)' }}
+          {/* Header strip — only rendered when a route is active so the
+              from/to color legend has somewhere to live. Hidden otherwise to
+              maximize the map area on the kiosk. */}
+          {showRoute && (
+            <div
+              className="flex items-center justify-end"
+              style={{
+                paddingLeft: 'clamp(1.25rem, 2vw, 2.5rem)',
+                paddingRight: 'clamp(1.25rem, 2vw, 2.5rem)',
+                paddingTop: 'clamp(0.6rem, 1vh, 1rem)',
+                paddingBottom: 'clamp(0.6rem, 1vh, 1rem)',
+              }}
             >
-              Campus Map
-            </h2>
-            {showRoute && (
               <div className="flex items-center gap-4">
                 <div className="flex items-center gap-2">
                   <div className="w-3 h-3 rounded-full bg-green-500"></div>
@@ -4609,9 +4612,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   <span className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>{toLocation}</span>
                 </div>
               </div>
-            )}
-          </div>
-          
+            </div>
+          )}
+
           <div className={`relative w-full ${darkMode ? 'bg-[#001C38]' : 'bg-[#F5F7FA]'} flex items-center justify-center`} style={{ zIndex: 1, overflow: 'hidden', maxWidth: '100%', width: '100%', boxSizing: 'border-box' }}>
             <div
               ref={mapRef}
