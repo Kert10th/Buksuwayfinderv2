@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useTransition, useDeferredValue } from 'react';
-import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, Building2, UtensilsCrossed, Dumbbell, FileText, Landmark, Sparkles, Pencil, Check, ArrowUp } from 'lucide-react';
+import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, UtensilsCrossed, FileText, Landmark, Sparkles, Pencil, Check, ArrowUp, ArrowUpDown, Video, Film, MicVocal, Warehouse } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -23,7 +23,7 @@ import Fuse from 'fuse.js';
 const CLOUD_LAST_PULLED_KEY = 'buksu-cloud-last-pulled';
 
 // Facility type categories
-type FacilityType = 'default' | 'comfort-room' | 'parking-4w' | 'parking-2w' | 'emergency';
+type FacilityType = 'default' | 'comfort-room' | 'parking-4w' | 'parking-2w' | 'emergency' | 'elevator';
 
 // Unified MapNode structure - Single Source of Truth
 interface MapNode {
@@ -117,6 +117,13 @@ export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProp
   const [uiMode, setUiMode] = useState<'search' | 'navigation'>('search');
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+  // Bumped whenever we want the kiosk-pin entrance animation to replay.
+  // Used as a `key` on the pin SVG so SMIL <animate> elements re-fire on
+  // remount (e.g. after the user clears a route and lands back on the map).
+  const [landingAnimToken, setLandingAnimToken] = useState(0);
+  // Popular Destinations accordion — collapsed by default so the control
+  // panel stays uncluttered. User clicks the header to reveal all tiles.
+  const [popularExpanded, setPopularExpanded] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const [currentDateTime, setCurrentDateTime] = useState(new Date());
@@ -476,7 +483,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       'comfort-room': 'Comfort Room',
       'parking-4w': '4-Wheel Parking',
       'parking-2w': 'Motorcycle Parking',
-      'emergency': 'Emergency'
+      'emergency': 'Emergency',
+      'elevator': 'Elevator'
     };
 
     const baseLabel = categoryLabels[category];
@@ -1598,19 +1606,23 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   // emergency) are excluded — they have their own markers.
   const locations = useMemo(() => {
     const defaultSet = new Set(DEFAULT_LOCATIONS);
-    const customNames: string[] = [];
+    const names: string[] = [];
+    // Defaults that still exist (so renamed-away ones don't appear as ghosts).
+    DEFAULT_LOCATIONS.forEach((name) => {
+      if (mapNodes[name]) names.push(name);
+    });
+    // Custom / admin-added named buildings.
     Object.values(mapNodes).forEach((node) => {
       if (!node?.id) return;
       // Skip facility-type nodes; they aren't named buildings.
       if (node.category && node.category !== 'default') return;
       if (defaultSet.has(node.id)) return;
-      customNames.push(node.id);
+      names.push(node.id);
     });
-    customNames.sort((a, b) => a.localeCompare(b));
-    // Drop default names whose node has been renamed away (so they don't
-    // appear as ghosts in the dropdown).
-    const validDefaults = DEFAULT_LOCATIONS.filter((name) => !!mapNodes[name]);
-    return [...validDefaults, ...customNames];
+    // Single alphabetical sort so renamed/added locations stay in the
+    // expected position instead of getting parked at the bottom.
+    names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+    return names;
   }, [DEFAULT_LOCATIONS, mapNodes]);
 
   // Helper to normalize route keys (trim whitespace, normalize spaces, handle case)
@@ -2028,6 +2040,15 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
             </g>
           );
         }
+        case 'elevator': {
+          // Stacked up/down chevrons — universal elevator pictogram.
+          return (
+            <g {...common}>
+              <path d="M -0.3 -0.15 L 0 -0.55 L 0.3 -0.15 Z" />
+              <path d="M -0.3 0.15 L 0 0.55 L 0.3 0.15 Z" />
+            </g>
+          );
+        }
         default:
           return null;
       }
@@ -2039,6 +2060,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       'parking-4w': '#4A90E2',
       'parking-2w': '#50C878',
       'emergency': '#DC143C',
+      'elevator': '#7C3AED',
     };
 
     return Object.entries(mapNodes)
@@ -2189,8 +2211,13 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     const minY = Math.min(...points.map((p) => p.y));
     const maxY = Math.max(...points.map((p) => p.y));
 
-    const PAD_TOP = 6;
-    const PAD_BOTTOM = 6;
+    // Asymmetric padding: leave extra headroom on the side that has a fixed
+    // UI overlay so the start/destination pins don't slip under it.
+    //   - Kiosk (wide): the "Navigating to …" pill floats over the top of the
+    //     map, so we pad the top.
+    //   - Mobile/tablet: the status bar sits at the bottom, so we pad below.
+    const PAD_TOP = isWideViewport ? 18 : 6;
+    const PAD_BOTTOM = isWideViewport ? 6 : 18;
     const PAD_SIDE = 6;
     const paddedMinX = Math.max(0, minX - PAD_SIDE);
     const paddedMaxX = Math.min(100, maxX + PAD_SIDE);
@@ -2234,6 +2261,53 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     };
   }, [routeData, fromLocation, toLocation, mapNodes]);
 
+  // Landing focus: when the kiosk first lands on the map (no route active),
+  // leave the zoom at 1× (full campus visible — no clipping) and just scroll
+  // the page so the green "You're Here" pin is in the user's viewport.
+  const focusKioskInView = useCallback(() => {
+    if (!isWideViewport) return false;
+    const coords = kioskPinOverride ?? mapNodes[kioskLocation]?.coordinates;
+    if (!coords) return false;
+    const container = mapRef.current;
+    if (!container) return false;
+    const rect = container.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return false;
+    setZoomLevel(1);
+    setPanPosition({ x: 0, y: 0 });
+    // Scroll the page so the pin's vertical position sits at the viewport
+    // center. At zoom=1 the entire campus is visible, so we only need to
+    // ensure the user is actually looking at the part of the map that holds
+    // their starting point.
+    const pinPageY = rect.top + window.scrollY + (coords.y / 100) * rect.height;
+    const targetScrollY = Math.max(0, pinPageY - window.innerHeight / 2);
+    window.scrollTo({ top: targetScrollY, behavior: 'smooth' });
+    return true;
+  }, [isWideViewport, kioskLocation, kioskPinOverride, mapNodes]);
+
+  const hasInitialKioskFocusedRef = useRef(false);
+  useEffect(() => {
+    if (hasInitialKioskFocusedRef.current) return;
+    if (!isWideViewport) return;
+    if (showRoute) return;
+    // Wait until the campus image has reported its aspect ratio — until then
+    // the map is rendered at a placeholder 700px, so the pin's pixel position
+    // (used for scroll-targeting) would be wrong.
+    if (!imageAspectRatio) return;
+    const tryFocus = () => {
+      if (focusKioskInView()) hasInitialKioskFocusedRef.current = true;
+    };
+    // First attempt on the next frame (after layout reflows for the new
+    // aspect ratio), then a settle pass in case the rect hadn't updated yet.
+    const frame = requestAnimationFrame(tryFocus);
+    const settle = window.setTimeout(() => {
+      if (!hasInitialKioskFocusedRef.current) tryFocus();
+    }, 400);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+    };
+  }, [isWideViewport, showRoute, focusKioskInView, imageAspectRatio]);
+
   const handleSwapLocations = () => {
     const temp = fromLocation;
     setFromLocation(toLocation);
@@ -2249,8 +2323,18 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     setFromLocation(isWideViewport ? kioskLocation : '');
     setToLocation('');
     setShowRoute(false);
-    setZoomLevel(1);
-    setPanPosition({ x: 0, y: 0 });
+    if (isWideViewport) {
+      // Return to the landing view: re-center on the kiosk pin instead of
+      // collapsing all the way out to a full campus view, and replay the
+      // pin's entrance animation by remounting its SVG via `key` change.
+      setLandingAnimToken((t) => t + 1);
+      requestAnimationFrame(() => {
+        focusKioskInView();
+      });
+    } else {
+      setZoomLevel(1);
+      setPanPosition({ x: 0, y: 0 });
+    }
     // Switch back to search mode
     setUiMode('search');
     toast.info('Route cleared', {
@@ -2268,9 +2352,13 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
         console.log('To:', toLocation);
         console.log('Current customRoutePaths state:', Object.keys(customRoutePaths));
         console.log('Total routes available:', Object.keys(customRoutePaths).length);
-        
+
         // Force a re-render to ensure latest customRoutePaths is used
         setShowRoute(true);
+        // Auto-clear any active Quick Access filter — the route SVG is hidden
+        // while a category is active, and the user's intent here is clearly
+        // "navigate," not "browse facilities."
+        setActiveCategory(null);
         // Switch to navigation mode when route is found
         setUiMode('navigation');
 
@@ -2310,6 +2398,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     setToLocation(loc);
     startTransition(() => {
       setShowRoute(true);
+      setActiveCategory(null);
       setUiMode('navigation');
       const destFloor = mapNodes[loc]?.floor;
       if (destFloor) {
@@ -2333,17 +2422,27 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   // were renamed/deleted by admin or that equal the kiosk location itself.
   // `label` is the short display name on the tile (the full `name` is still
   // used as the route destination + tooltip).
-  const POPULAR_DESTINATIONS: Array<{ name: string; label: string; Icon: React.ComponentType<{ size?: number; className?: string }> }> = useMemo(() => [
-    { name: 'University Library', label: 'Library', Icon: BookOpen },
-    { name: 'Administrative Building', label: 'Admin Bldg', Icon: Building2 },
-    { name: 'University Cafeteria', label: 'Cafeteria', Icon: UtensilsCrossed },
-    { name: 'University Gymnasium', label: 'Gymnasium', Icon: Dumbbell },
-    { name: "Registrar's office", label: 'Registrar', Icon: FileText },
-    { name: 'IP Museum', label: 'IP Museum', Icon: Landmark },
+  // Each tile lists every plausible node name (preferred first, then
+  // aliases). At render time we pick the first alias that actually exists in
+  // mapNodes — so renaming a node from "University Library" to "Library"
+  // (or vice-versa) doesn't quietly hide the tile.
+  const POPULAR_DESTINATIONS: Array<{ names: string[]; label: string; Icon: React.ComponentType<{ size?: number; className?: string }> }> = useMemo(() => [
+    { names: ['Library', 'University Library'], label: 'Library', Icon: BookOpen },
+    { names: ['Cafeteria', 'University Cafeteria', 'Rubia Cafeteria'], label: 'Cafeteria', Icon: UtensilsCrossed },
+    { names: ['Gymnasium', 'University Gymnasium'], label: 'Gymnasium', Icon: Warehouse },
+    { names: ["Registrar's office", 'Registrar'], label: 'Registrar', Icon: FileText },
+    { names: ['IP Museum'], label: 'IP Museum', Icon: Landmark },
+    { names: ['AVC', 'Audio Visual Center'], label: 'AVC', Icon: Video },
+    { names: ['Mini Theatre', 'Mini Theater'], label: 'Mini Theatre', Icon: Film },
+    { names: ['Auditorium'], label: 'Auditorium', Icon: MicVocal },
   ], []);
 
   const visiblePopularDestinations = useMemo(
-    () => POPULAR_DESTINATIONS.filter(({ name }) => name !== kioskLocation && !!mapNodes[name]),
+    () =>
+      POPULAR_DESTINATIONS.flatMap(({ names, label, Icon }) => {
+        const matched = names.find((n) => n !== kioskLocation && !!mapNodes[n]);
+        return matched ? [{ name: matched, label, Icon }] : [];
+      }),
     [POPULAR_DESTINATIONS, kioskLocation, mapNodes],
   );
 
@@ -2506,6 +2605,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       'parking-4w': 0,
       'parking-2w': 0,
       'emergency': 0,
+      'elevator': 0,
     };
     Object.values(mapNodes).forEach((node) => {
       if (node.category) counts[node.category] += 1;
@@ -3067,6 +3167,38 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
             <BrandLogo darkMode={darkMode} />
           </div>
           <div className="flex items-center shrink-0" style={{ gap: 'clamp(0.75rem, 1vw, 1.25rem)' }}>
+            {/* Kiosk location pill — replaces the FROM control on wide kiosks. */}
+            {isWideViewport && kioskLocation && (
+              <div
+                className="flex items-center gap-2 font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
+                style={{
+                  padding: '0.4rem 0.85rem',
+                  borderRadius: '9999px',
+                  background: darkMode
+                    ? 'linear-gradient(90deg, rgba(16, 185, 129, 0.22), rgba(15, 23, 42, 0.6))'
+                    : 'linear-gradient(90deg, rgba(16, 185, 129, 0.14), rgba(255, 255, 255, 0.75))',
+                  border: darkMode ? '1px solid rgba(16, 185, 129, 0.5)' : '1px solid rgba(16, 185, 129, 0.45)',
+                  boxShadow: darkMode ? '0 2px 4px rgba(0, 0, 0, 0.25)' : '0 1px 3px rgba(0, 28, 56, 0.08)',
+                }}
+                title="This kiosk's location"
+              >
+                <span className="relative flex h-2.5 w-2.5 shrink-0">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#10B981] opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-[#10B981]"></span>
+                </span>
+                <span
+                  style={{
+                    fontSize: 'clamp(0.78rem, 0.9vw, 1rem)',
+                    fontWeight: 600,
+                    letterSpacing: '0.02em',
+                    color: darkMode ? '#FFFFFF' : '#001C38',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  You're Here · {kioskLocation}
+                </span>
+              </div>
+            )}
             {/* Date and Time Display — horizontal on tablet+, compact single-line time on mobile */}
             <div
               className="flex items-baseline font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
@@ -3255,7 +3387,11 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
             </div>
 
             <div className="space-y-4">
-              {/* FROM / "You're Here" — kiosk badge on wide viewports, dropdown on mobile */}
+              {/* FROM / "You're Here" — kiosk badge on wide viewports, dropdown on mobile.
+                  On the wide kiosk the location is shown in the header pill and the route
+                  always starts there, so this block is only rendered for mobile users
+                  (who pick a starting point) and for admins (who configure the kiosk). */}
+              {(!isWideViewport || isAdmin) && (
               <div>
                 <label className="flex items-center gap-2 mb-2">
                   <div
@@ -3488,6 +3624,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   </div>
                 )}
               </div>
+              )}
 
               {/* TO Input */}
               <div>
@@ -3616,35 +3753,202 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               </Button>
             </div>
 
-            {/* Popular Destinations - One-tap tiles for kiosk users */}
+            {/* Popular Destinations - collapsible accordion. Click the header
+                to reveal the one-tap destination tiles. */}
             {visiblePopularDestinations.length > 0 && (
               <div className="mt-6">
-                <label className="flex items-center gap-2 mb-3">
-                  <div className="w-5 h-5 rounded-full bg-gradient-to-r from-[#E6A13A] to-[#FFD700] flex items-center justify-center shadow-lg">
-                    <Sparkles size={12} className="text-white" />
-                  </div>
-                  <span
-                    className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] text-sm font-medium"
-                    style={{ color: darkMode ? '#FFFFFF' : '#001C38' }}
+                <style>{`
+                  @keyframes popDestTileIn {
+                    0% { opacity: 0; transform: translateY(10px) scale(0.92); }
+                    60% { opacity: 1; transform: translateY(-2px) scale(1.02); }
+                    100% { opacity: 1; transform: translateY(0) scale(1); }
+                  }
+                  @keyframes popDestIconPulse {
+                    0% { transform: scale(1); opacity: 0.55; }
+                    100% { transform: scale(1.7); opacity: 0; }
+                  }
+                  @keyframes popDestSparkleSpin {
+                    from { transform: rotate(0deg); }
+                    to { transform: rotate(360deg); }
+                  }
+                `}</style>
+                <button
+                  type="button"
+                  onClick={() => setPopularExpanded((v) => !v)}
+                  className="w-full select-none"
+                  aria-expanded={popularExpanded}
+                  aria-controls="popular-destinations-grid"
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.85rem',
+                    padding: '0.7rem 0.9rem 0.7rem 0.7rem',
+                    margin: '-0.45rem -0.55rem 0.7rem',
+                    borderRadius: '0.95rem',
+                    cursor: 'pointer',
+                    background: darkMode
+                      ? 'linear-gradient(135deg, rgba(230, 161, 58, 0.14) 0%, rgba(0, 198, 255, 0.07) 100%)'
+                      : 'linear-gradient(135deg, rgba(230, 161, 58, 0.16) 0%, rgba(0, 117, 255, 0.06) 100%)',
+                    border: darkMode
+                      ? '1px solid rgba(230, 161, 58, 0.30)'
+                      : '1px solid rgba(230, 161, 58, 0.38)',
+                    boxShadow: darkMode
+                      ? 'inset 0 1px 0 rgba(255,255,255,0.05), 0 4px 14px rgba(0, 0, 0, 0.22)'
+                      : 'inset 0 1px 0 rgba(255,255,255,0.55), 0 3px 12px rgba(230, 161, 58, 0.10)',
+                    transition:
+                      'background 220ms ease, border-color 220ms ease, transform 140ms cubic-bezier(0.22,1,0.36,1), box-shadow 220ms ease',
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.borderColor = darkMode
+                      ? 'rgba(230, 161, 58, 0.55)'
+                      : 'rgba(230, 161, 58, 0.65)';
+                    e.currentTarget.style.boxShadow = darkMode
+                      ? 'inset 0 1px 0 rgba(255,255,255,0.06), 0 8px 22px rgba(230, 161, 58, 0.20)'
+                      : 'inset 0 1px 0 rgba(255,255,255,0.6), 0 8px 18px rgba(230, 161, 58, 0.22)';
+                    e.currentTarget.style.transform = 'translateY(-1px)';
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.borderColor = darkMode
+                      ? 'rgba(230, 161, 58, 0.30)'
+                      : 'rgba(230, 161, 58, 0.38)';
+                    e.currentTarget.style.boxShadow = darkMode
+                      ? 'inset 0 1px 0 rgba(255,255,255,0.05), 0 4px 14px rgba(0, 0, 0, 0.22)'
+                      : 'inset 0 1px 0 rgba(255,255,255,0.55), 0 3px 12px rgba(230, 161, 58, 0.10)';
+                    e.currentTarget.style.transform = 'translateY(0) scale(1)';
+                  }}
+                  onMouseDown={(e) => {
+                    e.currentTarget.style.transform = 'translateY(0) scale(0.98)';
+                  }}
+                  onMouseUp={(e) => {
+                    e.currentTarget.style.transform = 'translateY(-1px) scale(1)';
+                  }}
+                >
+                  {/* Sparkles icon — gradient circle with a soft pulse ring
+                      when the panel is collapsed (cue to click). */}
+                  <div
+                    className="rounded-full flex items-center justify-center shrink-0 relative"
+                    style={{
+                      width: '36px',
+                      height: '36px',
+                      background: 'linear-gradient(135deg, #E6A13A 0%, #FFD700 100%)',
+                      boxShadow:
+                        '0 4px 12px rgba(230, 161, 58, 0.4), inset 0 1px 0 rgba(255,255,255,0.35)',
+                    }}
                   >
-                    Popular Destinations
-                  </span>
-                </label>
-                <div className="grid grid-cols-3 gap-2">
-                  {visiblePopularDestinations.map(({ name, label, Icon }) => {
+                    <Sparkles
+                      size={17}
+                      className="text-white"
+                      style={{
+                        animation: !popularExpanded
+                          ? 'popDestSparkleSpin 6s linear infinite'
+                          : undefined,
+                      }}
+                    />
+                    {!popularExpanded && (
+                      <span
+                        aria-hidden
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          borderRadius: '9999px',
+                          border: '2px solid rgba(230, 161, 58, 0.65)',
+                          animation: 'popDestIconPulse 1.9s ease-out infinite',
+                        }}
+                      />
+                    )}
+                  </div>
+                  {/* Title + dynamic subtitle */}
+                  <div
+                    className="flex flex-col text-left flex-1 min-w-0"
+                    style={{ lineHeight: 1.15 }}
+                  >
+                    <span
+                      className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
+                      style={{
+                        fontSize: '0.95rem',
+                        fontWeight: 600,
+                        color: darkMode ? '#FFFFFF' : '#001C38',
+                        letterSpacing: '0.01em',
+                      }}
+                    >
+                      Popular Destinations
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '0.7rem',
+                        fontWeight: 500,
+                        color: darkMode
+                          ? 'rgba(255, 255, 255, 0.6)'
+                          : 'rgba(0, 28, 56, 0.62)',
+                        marginTop: '2px',
+                      }}
+                    >
+                      {popularExpanded
+                        ? 'Tap a place to navigate'
+                        : `${visiblePopularDestinations.length} places · tap to expand`}
+                    </span>
+                  </div>
+                  {/* Chevron in its own circular badge */}
+                  <div
+                    className="rounded-full flex items-center justify-center shrink-0"
+                    style={{
+                      width: '30px',
+                      height: '30px',
+                      background: darkMode
+                        ? 'rgba(255, 255, 255, 0.07)'
+                        : 'rgba(0, 28, 56, 0.06)',
+                      border: darkMode
+                        ? '1px solid rgba(255, 255, 255, 0.10)'
+                        : '1px solid rgba(0, 28, 56, 0.10)',
+                    }}
+                  >
+                    <ChevronDown
+                      size={16}
+                      style={{
+                        color: darkMode ? 'rgba(255,255,255,0.85)' : 'rgba(0, 28, 56, 0.72)',
+                        transform: popularExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                        transition: 'transform 320ms cubic-bezier(0.22, 1, 0.36, 1)',
+                      }}
+                    />
+                  </div>
+                </button>
+                <div
+                  id="popular-destinations-grid"
+                  className="grid grid-cols-3 gap-2"
+                  style={{
+                    overflow: 'hidden',
+                    maxHeight: popularExpanded ? '640px' : '0px',
+                    opacity: popularExpanded ? 1 : 0,
+                    pointerEvents: popularExpanded ? 'auto' : 'none',
+                    transition:
+                      'max-height 360ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease-out',
+                  }}
+                >
+                  {visiblePopularDestinations.map(({ name, label, Icon }, idx) => {
                     const floorBadge = getFloorBadge(mapNodes[name]?.floor);
                     return (
                       <button
-                        key={name}
+                        // Suffix the key with the open/closed state so the
+                        // tile remounts on every open and the entrance
+                        // animation replays from scratch.
+                        key={`${name}-${popularExpanded ? 'open' : 'closed'}`}
                         onClick={() => handleQuickDestination(name)}
                         disabled={isDrawingMode || isPending}
-                        className="relative rounded-xl border transition-all flex flex-col items-center justify-center gap-2 px-2 py-3 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 active:scale-95"
+                        className="relative rounded-xl border transition-all flex flex-col items-center justify-center hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 active:scale-95"
                         style={{
-                          minHeight: 'clamp(5.25rem, 6.5vw, 6.5rem)',
+                          minHeight: 'clamp(6rem, 7.5vw, 7.5rem)',
+                          padding: '0.85rem 0.4rem 0.65rem',
+                          gap: '0.5rem',
                           background: darkMode ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.95)',
                           border: darkMode ? '1px solid rgba(0, 198, 255, 0.25)' : '1px solid rgba(0, 117, 255, 0.18)',
                           boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
                           color: darkMode ? '#FFFFFF' : '#001C38',
+                          // Staggered fade-up + slight overshoot bounce on open.
+                          // `backwards` keeps the tile in its initial keyframe
+                          // (invisible) until its delay elapses.
+                          animation: popularExpanded
+                            ? `popDestTileIn 460ms cubic-bezier(0.22, 1, 0.36, 1) ${idx * 55 + 80}ms backwards`
+                            : undefined,
                         }}
                         onMouseEnter={(e) => {
                           if (!e.currentTarget.disabled) {
@@ -3664,25 +3968,33 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                         }}
                         title={name}
                       >
+                        <Icon size={22} className="text-[#00C6FF] shrink-0" />
+                        <span
+                          className="font-medium text-center w-full"
+                          style={{
+                            color: darkMode ? '#FFFFFF' : '#001C38',
+                            fontSize: '11px',
+                            lineHeight: '1.2',
+                            wordBreak: 'break-word',
+                          }}
+                        >
+                          {label}
+                        </span>
                         {floorBadge && (
                           <span
-                            className="absolute top-1 right-1 px-1 py-0.5 rounded text-[9px] font-semibold leading-none"
+                            className="text-center w-full"
                             style={{
-                              background: 'rgba(230, 161, 58, 0.2)',
                               color: '#E6A13A',
-                              border: '1px solid rgba(230, 161, 58, 0.35)',
+                              fontSize: '9px',
+                              fontWeight: 600,
+                              letterSpacing: '0.05em',
+                              lineHeight: 1,
+                              marginTop: '-0.15rem',
                             }}
                           >
                             {floorBadge}
                           </span>
                         )}
-                        <Icon size={22} className="text-[#00C6FF] shrink-0" />
-                        <span
-                          className="text-[11px] leading-tight font-medium text-center truncate w-full"
-                          style={{ color: darkMode ? '#FFFFFF' : '#001C38' }}
-                        >
-                          {label}
-                        </span>
                       </button>
                     );
                   })}
@@ -3733,73 +4045,163 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   </span>
                 </div>
               </label>
-              <div className="flex flex-wrap gap-2">
+              <div className="flex flex-col items-stretch gap-1.5">
                 {([
-                  { key: 'comfort-room' as FacilityType, label: 'Comfort Room', Icon: DoorOpen, activeBg: '#E6A13A', activeHover: '#D19133' },
                   { key: 'parking-4w' as FacilityType, label: '4-Wheel Parking', Icon: Car, activeBg: '#4A90E2', activeHover: '#3A80D2' },
-                  { key: 'parking-2w' as FacilityType, label: 'Motorcycle Parking', Icon: Bike, activeBg: '#50C878', activeHover: '#40B868' },
+                  { key: 'comfort-room' as FacilityType, label: 'Comfort Room', Icon: DoorOpen, activeBg: '#E6A13A', activeHover: '#D19133' },
+                  { key: 'elevator' as FacilityType, label: 'Elevator', Icon: ArrowUpDown, activeBg: '#7C3AED', activeHover: '#6D28D9' },
                   { key: 'emergency' as FacilityType, label: 'Emergency', Icon: Stethoscope, activeBg: '#DC143C', activeHover: '#CC133C' },
+                  { key: 'parking-2w' as FacilityType, label: 'Motorcycle Parking', Icon: Bike, activeBg: '#50C878', activeHover: '#40B868' },
                 ]).map(({ key, label, Icon, activeBg, activeHover }, idx) => {
                   const isActive = activeCategory === key;
                   const count = categoryCounts[key];
-                  // Inline styles for the active background because this project
-                  // uses a pre-compiled Tailwind CSS dump — arbitrary classes
-                  // like bg-[#4A90E2] aren't in the bundle, so Tailwind classes
-                  // don't apply for some of the category colors. Inline style
-                  // sidesteps the issue entirely.
-                  const neutralClass = darkMode
-                    ? 'bg-white/10 hover:bg-white/20 text-white border-white/30'
-                    : 'bg-white hover:bg-gray-50 text-[#001C38] border-[#001C38]/20';
-                  const badgeClass = isActive
-                    ? 'bg-white/25 text-white'
-                    : darkMode
-                      ? 'bg-white/15 text-white/75'
-                      : 'bg-[#001C38]/10 text-[#001C38]/70';
-                  // Stagger each chip's icon bounce by 0.3s so the row
-                  // ripples instead of all bouncing in unison.
+                  const isMuted = count === 0 && !isActive;
                   const iconDelay = `${idx * 0.3}s`;
+                  // Frosted-glass styling, color-tinted per category. Inactive:
+                  // subtle gradient from the category color into the panel
+                  // background, with backdrop-blur for the glass effect.
+                  // Active: bolder gradient + colored shadow.
+                  const inactiveBg = darkMode
+                    ? `linear-gradient(135deg, ${activeBg}24 0%, rgba(15, 23, 42, 0.45) 100%)`
+                    : `linear-gradient(135deg, ${activeBg}26 0%, rgba(255, 255, 255, 0.55) 100%)`;
+                  const inactiveBorder = darkMode
+                    ? `1px solid ${activeBg}3D`
+                    : `1px solid ${activeBg}4D`;
+                  const inactiveShadow = darkMode
+                    ? `inset 0 1px 0 rgba(255,255,255,0.06), 0 3px 10px rgba(0, 0, 0, 0.20)`
+                    : `inset 0 1px 0 rgba(255,255,255,0.6), 0 3px 10px ${activeBg}14`;
+                  const activeBgGrad = `linear-gradient(135deg, ${activeBg} 0%, ${activeHover} 100%)`;
+                  const activeShadow = `0 6px 18px ${activeBg}55, inset 0 1px 0 rgba(255,255,255,0.25)`;
                   return (
-                    <Button
+                    <button
                       key={key}
+                      type="button"
                       onClick={() => handleCategoryClick(key, label)}
-                      variant={isActive ? 'default' : 'outline'}
-                      size="sm"
-                      className={`qa-chip rounded-full transition-all flex items-center gap-2 ${isActive ? 'text-white border-transparent' : neutralClass} ${count === 0 && !isActive ? 'opacity-60' : ''}`}
-                      style={isActive ? { background: activeBg, color: '#FFFFFF', borderColor: activeBg } : undefined}
-                      onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
-                        if (isActive) e.currentTarget.style.background = activeHover;
+                      className={`qa-chip w-full text-left transition-all ${isMuted ? 'opacity-60' : ''}`}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '0.7rem',
+                        padding: '0.55rem 0.7rem 0.55rem 0.55rem',
+                        borderRadius: '0.85rem',
+                        background: isActive ? activeBgGrad : inactiveBg,
+                        backdropFilter: 'blur(14px) saturate(140%)',
+                        WebkitBackdropFilter: 'blur(14px) saturate(140%)',
+                        border: isActive ? `1px solid ${activeBg}` : inactiveBorder,
+                        color: isActive ? '#FFFFFF' : darkMode ? '#FFFFFF' : '#001C38',
+                        cursor: 'pointer',
+                        boxShadow: isActive ? activeShadow : inactiveShadow,
+                        transition:
+                          'background 220ms ease, border-color 220ms ease, transform 140ms ease, box-shadow 220ms ease',
                       }}
-                      onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
-                        if (isActive) e.currentTarget.style.background = activeBg;
+                      onMouseEnter={(e) => {
+                        if (isActive) {
+                          e.currentTarget.style.background = `linear-gradient(135deg, ${activeHover} 0%, ${activeBg} 100%)`;
+                        } else {
+                          e.currentTarget.style.background = darkMode
+                            ? `linear-gradient(135deg, ${activeBg}3D 0%, rgba(15, 23, 42, 0.55) 100%)`
+                            : `linear-gradient(135deg, ${activeBg}3D 0%, rgba(255, 255, 255, 0.7) 100%)`;
+                          e.currentTarget.style.borderColor = `${activeBg}80`;
+                          e.currentTarget.style.boxShadow = darkMode
+                            ? `inset 0 1px 0 rgba(255,255,255,0.08), 0 6px 16px ${activeBg}30`
+                            : `inset 0 1px 0 rgba(255,255,255,0.7), 0 6px 16px ${activeBg}28`;
+                        }
+                      }}
+                      onMouseLeave={(e) => {
+                        if (isActive) {
+                          e.currentTarget.style.background = activeBgGrad;
+                        } else {
+                          e.currentTarget.style.background = inactiveBg;
+                          e.currentTarget.style.borderColor = darkMode ? `${activeBg}3D` : `${activeBg}4D`;
+                          e.currentTarget.style.boxShadow = inactiveShadow;
+                        }
+                        e.currentTarget.style.transform = 'scale(1)';
+                      }}
+                      onMouseDown={(e) => {
+                        e.currentTarget.style.transform = 'scale(0.985)';
+                      }}
+                      onMouseUp={(e) => {
+                        e.currentTarget.style.transform = 'scale(1)';
                       }}
                     >
+                      {/* Icon tile — translucent panel inside the glass card. */}
                       <span
-                        className="qa-icon"
+                        className="qa-icon flex items-center justify-center shrink-0"
                         style={{
-                          // CSS variable consumed by the qaIconGlow keyframe
-                          // so each chip's bounce-glow uses its brand color.
                           ['--qa-color' as never]: activeBg,
                           animationDelay: iconDelay,
+                          width: '32px',
+                          height: '32px',
+                          borderRadius: '0.6rem',
+                          background: isActive
+                            ? 'rgba(255, 255, 255, 0.25)'
+                            : darkMode
+                              ? `${activeBg}33`
+                              : `${activeBg}26`,
+                          border: isActive
+                            ? '1px solid rgba(255, 255, 255, 0.35)'
+                            : `1px solid ${activeBg}55`,
+                          color: isActive ? '#FFFFFF' : activeBg,
+                          boxShadow: isActive
+                            ? 'inset 0 1px 0 rgba(255,255,255,0.3)'
+                            : `inset 0 1px 0 ${activeBg}22`,
                         }}
                       >
                         <Icon size={16} />
                       </span>
-                      <span>{label}</span>
-                      <span className={`ml-1 text-[10px] font-semibold px-1.5 rounded-full ${badgeClass}`}>
+                      <span
+                        className="flex-1 truncate font-medium"
+                        style={{ fontSize: '0.85rem' }}
+                      >
+                        {label}
+                      </span>
+                      <span
+                        className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full leading-none"
+                        style={{
+                          background: isActive
+                            ? 'rgba(255, 255, 255, 0.25)'
+                            : darkMode
+                              ? 'rgba(255, 255, 255, 0.10)'
+                              : 'rgba(0, 28, 56, 0.08)',
+                          color: isActive ? '#FFFFFF' : darkMode ? 'rgba(255,255,255,0.75)' : 'rgba(0,28,56,0.7)',
+                          minWidth: '1.25rem',
+                          textAlign: 'center',
+                        }}
+                      >
                         {count}
                       </span>
-                    </Button>
+                    </button>
                   );
                 })}
                 {activeCategory && (
-                  <Button
+                  <button
+                    type="button"
                     onClick={() => setActiveCategory(null)}
-                    variant="outline"
-                    size="sm"
-                    className="rounded-full bg-white/10 hover:bg-white/20 text-white border-white/30"
+                    className="w-full text-center transition-all"
+                    style={{
+                      padding: '0.45rem 0.7rem',
+                      borderRadius: '0.6rem',
+                      background: 'transparent',
+                      border: darkMode
+                        ? '1px dashed rgba(255, 255, 255, 0.25)'
+                        : '1px dashed rgba(0, 28, 56, 0.25)',
+                      color: darkMode ? 'rgba(255,255,255,0.7)' : 'rgba(0,28,56,0.65)',
+                      fontSize: '0.78rem',
+                      fontWeight: 500,
+                      cursor: 'pointer',
+                      marginTop: '0.25rem',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = darkMode
+                        ? 'rgba(255, 255, 255, 0.05)'
+                        : 'rgba(0, 28, 56, 0.04)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'transparent';
+                    }}
                   >
-                    Clear
-                  </Button>
+                    Clear filter
+                  </button>
                 )}
               </div>
             </div>
@@ -4457,6 +4859,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   node's coordinates. */}
               {isWideViewport && (kioskPinOverride || mapNodes[kioskLocation]?.coordinates) && (
                 <svg
+                  key={landingAnimToken}
                   className={`absolute inset-0 w-full h-full pointer-events-none ${isDragging ? '' : 'transition-transform duration-300 ease-out'}`}
                   viewBox="0 0 100 100"
                   preserveAspectRatio="none"
@@ -4499,6 +4902,63 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     const tailHalf = 0.7;
                     return (
                       <g>
+                        {/* One-shot entrance: fade + drop-in from above with
+                            a small overshoot bounce. Plays once on initial
+                            landing and replays on Clear (via `key` remount). */}
+                        <animate
+                          attributeName="opacity"
+                          from="0"
+                          to="1"
+                          begin="0s"
+                          dur="0.55s"
+                          fill="freeze"
+                        />
+                        <animateTransform
+                          attributeName="transform"
+                          type="translate"
+                          values="0 -6; 0 0.6; 0 0"
+                          keyTimes="0; 0.75; 1"
+                          dur="0.7s"
+                          begin="0s"
+                          fill="freeze"
+                        />
+                        {/* One-shot radar sweep — a single bright ring
+                            expanding outward from the pin to draw the eye
+                            after the pin lands. */}
+                        <circle
+                          cx={x}
+                          cy={y}
+                          r="1.6"
+                          fill="none"
+                          stroke="#10B981"
+                          strokeWidth="0.35"
+                          opacity="0"
+                        >
+                          <animate
+                            attributeName="r"
+                            from="1.6"
+                            to="13"
+                            begin="0.4s"
+                            dur="1.1s"
+                            fill="freeze"
+                          />
+                          <animate
+                            attributeName="opacity"
+                            values="0; 0.85; 0"
+                            keyTimes="0; 0.12; 1"
+                            begin="0.4s"
+                            dur="1.1s"
+                            fill="freeze"
+                          />
+                          <animate
+                            attributeName="stroke-width"
+                            from="0.35"
+                            to="0.05"
+                            begin="0.4s"
+                            dur="1.1s"
+                            fill="freeze"
+                          />
+                        </circle>
                         {/* Triple-ring stagger pulse */}
                         <circle cx={x} cy={y} r="1.8" fill="#10B981" opacity="0.35">
                           <animate attributeName="r" values="1.8;3.6;1.8" dur="2.4s" repeatCount="indefinite" />
@@ -5329,10 +5789,26 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   <Stethoscope size={16} className="mr-2" />
                   Add Clinic
                 </Button>
+                <Button
+                  onClick={() => {
+                    setStampMode('elevator');
+                    setIsDrawingMode(false);
+                    setIsLocationEditMode(false);
+                    setEditingLocation(null);
+                    mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  }}
+                  variant={stampMode === 'elevator' ? 'default' : 'outline'}
+                  className={stampMode === 'elevator' ? 'bg-[#7C3AED] hover:bg-[#6D28D9] text-white' : ''}
+                  size="sm"
+                >
+                  <ArrowUpDown size={16} className="mr-2" />
+                  Add Elevator
+                </Button>
                 {stampMode && (
                   <Button
                     onClick={() => {
-                      if (window.confirm(`Are you sure you want to clear all ${stampMode === 'comfort-room' ? 'Comfort Room' : stampMode === 'parking-4w' ? '4-Wheel Parking' : stampMode === 'parking-2w' ? 'Motorcycle Parking' : 'Emergency'} markers?`)) {
+                      const stampLabel = stampMode === 'comfort-room' ? 'Comfort Room' : stampMode === 'parking-4w' ? '4-Wheel Parking' : stampMode === 'parking-2w' ? 'Motorcycle Parking' : stampMode === 'emergency' ? 'Emergency' : 'Elevator';
+                      if (window.confirm(`Are you sure you want to clear all ${stampLabel} markers?`)) {
                         clearAllStampModeNodes(stampMode);
                       }
                     }}
@@ -5347,7 +5823,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               </div>
               {stampMode && (
                 <p className={`text-xs mt-2 ${darkMode ? 'text-[#E6A13A]' : 'text-[#E6A13A]'}`}>
-                  ✨ Stamp Mode Active: Click on the map to add {stampMode === 'comfort-room' ? 'Comfort Room' : stampMode === 'parking-4w' ? '4-Wheel Parking' : stampMode === 'parking-2w' ? 'Motorcycle Parking' : 'Emergency'} markers. Right-click to undo.
+                  ✨ Stamp Mode Active: Click on the map to add {stampMode === 'comfort-room' ? 'Comfort Room' : stampMode === 'parking-4w' ? '4-Wheel Parking' : stampMode === 'parking-2w' ? 'Motorcycle Parking' : stampMode === 'emergency' ? 'Emergency' : 'Elevator'} markers. Right-click to undo.
                 </p>
               )}
             </div>
