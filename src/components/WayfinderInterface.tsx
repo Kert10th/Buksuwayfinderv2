@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useTransition, useDeferredValue } from 'react';
-import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, UtensilsCrossed, FileText, Landmark, Sparkles, Pencil, Check, ArrowUp, ArrowUpDown, Video, Film, MicVocal, Warehouse, Banknote } from 'lucide-react';
+import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, UtensilsCrossed, FileText, Landmark, Sparkles, Pencil, Check, ArrowUp, ArrowUpDown, Video, Warehouse, Banknote, Volume2, VolumeX } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -27,6 +27,14 @@ import {
   playSelect,
   playError,
 } from '../utils/sfx';
+import {
+  announceRouteFound,
+  isTtsMuted,
+  isTtsSupported,
+  setTtsMuted,
+  stopSpeaking,
+  subscribeMuted,
+} from '../utils/tts';
 import Fuse from 'fuse.js';
 
 const CLOUD_LAST_PULLED_KEY = 'buksu-cloud-last-pulled';
@@ -81,6 +89,95 @@ function MedicalCrossIcon({
   );
 }
 
+// Cinema interior — a screen at the top with three rows of audience
+// seats below (rows widen toward the front, mimicking perspective).
+// Drop-in replacement for a Lucide icon.
+function MiniTheatreIcon({
+  size = 24,
+  className,
+  color,
+  ...rest
+}: {
+  size?: number;
+  className?: string;
+  color?: string;
+  strokeWidth?: number;
+}) {
+  const c = color ?? 'currentColor';
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="none"
+      className={className}
+      {...rest}
+    >
+      {/* Screen — outlined rectangle */}
+      <rect x="3.5" y="2.5" width="17" height="6.5" rx="0.7" fill="none" stroke={c} strokeWidth="1.7" strokeLinejoin="round" />
+      {/* Row 1 (back) — 4 seat backs, narrow */}
+      {[6.6, 9.6, 12.6, 15.6].map((x) => (
+        <rect key={`r1-${x}`} x={x} y="11.8" width="2" height="1.4" rx="0.7" fill={c} />
+      ))}
+      {/* Row 2 — 5 seat backs */}
+      {[5.0, 8.1, 11.2, 14.3, 17.4].map((x) => (
+        <rect key={`r2-${x}`} x={x} y="14.8" width="2.2" height="1.5" rx="0.75" fill={c} />
+      ))}
+      {/* Row 3 (front) — 6 seat backs, widest */}
+      {[3.2, 6.5, 9.8, 13.1, 16.4, 19.7].map((x) => (
+        <rect key={`r3-${x}`} x={x} y="18.2" width="2.4" height="1.7" rx="0.85" fill={c} />
+      ))}
+    </svg>
+  );
+}
+
+// Session-hall interior — a small lectern / podium on a stage line,
+// with rows of audience seats below. Used for the Auditorium tile.
+function SessionHallIcon({
+  size = 24,
+  className,
+  color,
+  ...rest
+}: {
+  size?: number;
+  className?: string;
+  color?: string;
+  strokeWidth?: number;
+}) {
+  const c = color ?? 'currentColor';
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="none"
+      className={className}
+      {...rest}
+    >
+      {/* Lectern — small rounded rectangle */}
+      <rect x="10.6" y="3" width="2.8" height="3" rx="0.4" fill={c} />
+      {/* Stage line — long horizontal bar */}
+      <rect x="2.5" y="7.2" width="19" height="0.9" rx="0.45" fill={c} />
+      {/* Row 1 (back) — 5 seats */}
+      {[4.6, 7.6, 10.6, 13.6, 16.6].map((x) => (
+        <rect key={`s1-${x}`} x={x} y="10.8" width="2.4" height="1.4" rx="0.7" fill={c} />
+      ))}
+      {/* Row 2 — 6 seats */}
+      {[3.4, 6.6, 9.8, 13.0, 16.2, 19.4].map((x) => (
+        <rect key={`s2-${x}`} x={x} y="14.2" width="2.4" height="1.55" rx="0.78" fill={c} />
+      ))}
+      {/* Row 3 (front, widest) — 6 seats with extra width */}
+      {[2.5, 6.0, 9.5, 13.0, 16.5, 20.0].map((x) => (
+        <rect key={`s3-${x}`} x={x} y="17.8" width="2.6" height="1.8" rx="0.9" fill={c} />
+      ))}
+    </svg>
+  );
+}
+
 
 export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProps) {
   // Ref for the map image element to calculate accurate coordinates
@@ -93,6 +190,13 @@ export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProp
   const hasUpdatedDefaults = useRef(false);
   const [imageAspectRatio, setImageAspectRatio] = useState<number | null>(null);
   const [darkMode, setDarkMode] = useState(true);
+  // Mirror the TTS module's mute state in component state so the icon
+  // re-renders when staff toggles it.
+  const [ttsMutedState, setTtsMutedState] = useState<boolean>(() => isTtsMuted());
+  useEffect(() => subscribeMuted(setTtsMutedState), []);
+  // Stop any in-progress voice announcement when the wayfinder unmounts
+  // (logout / idle timeout) so speech doesn't carry into the landing page.
+  useEffect(() => stopSpeaking, []);
 
   // Sync shadcn theme vars (via html.dark class) with the darkMode toggle.
   useEffect(() => {
@@ -2396,6 +2500,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
 
   const handleClear = () => {
     playClick();
+    stopSpeaking();
     // On wide/kiosk viewport "From" is fixed to the kiosk — reset to it.
     // On mobile users may have picked any starting point — clear to empty.
     setFromLocation(isWideViewport ? kioskLocation : '');
@@ -2425,6 +2530,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   const handleFindRoute = () => {
     if (fromLocation && toLocation) {
       playSuccess();
+      announceRouteFound(toLocation, mapNodes[toLocation]?.floor ?? null);
       startTransition(() => {
         console.log('=== FIND ROUTE CLICKED ===');
         console.log('From:', fromLocation);
@@ -2466,6 +2572,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   const handleQuickDestination = (loc: string) => {
     if (!fromLocation || !loc || loc === fromLocation) return;
     playPop();
+    announceRouteFound(loc, mapNodes[loc]?.floor ?? null);
     setToLocation(loc);
     startTransition(() => {
       setShowRoute(true);
@@ -2494,8 +2601,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     { names: ['Cashier', "Cashier's Office", 'Cashiering Office', 'Cashiering'], label: 'Cashier', Icon: Banknote },
     { names: ['IP Museum'], label: 'IP Museum', Icon: Landmark },
     { names: ['AVC', 'Audio Visual Center'], label: 'AVC', Icon: Video },
-    { names: ['Mini Theatre', 'Mini Theater'], label: 'Mini Theatre', Icon: Film },
-    { names: ['Auditorium'], label: 'Auditorium', Icon: MicVocal },
+    { names: ['Mini Theatre', 'Mini Theater'], label: 'Mini Theatre', Icon: MiniTheatreIcon },
+    { names: ['Auditorium', 'Convention Hall', 'Session Hall'], label: 'Auditorium', Icon: SessionHallIcon },
   ], []);
 
   const visiblePopularDestinations = useMemo(
@@ -3311,6 +3418,24 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
             >
               {darkMode ? <Sun size={20} /> : <Moon size={20} />}
             </Button>
+            {/* Voice announcement toggle (only shown when the browser
+                supports the Web Speech API). Stops any in-progress
+                announcement immediately when muted. */}
+            {isTtsSupported() && (
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => setTtsMuted(!ttsMutedState)}
+                className={`rounded-lg transition-all ${darkMode ? 'text-white hover:bg-white/10' : 'text-[#001C38] hover:bg-black/5'}`}
+                style={{
+                  background: darkMode ? 'rgba(15, 21, 53, 0.5)' : 'rgba(255, 255, 255, 0.7)',
+                  border: darkMode ? '1px solid rgba(255, 255, 255, 0.08)' : '1px solid rgba(0, 28, 56, 0.12)',
+                }}
+                title={ttsMutedState ? 'Voice announcements: off — click to turn on' : 'Voice announcements: on — click to mute'}
+              >
+                {ttsMutedState ? <VolumeX size={20} /> : <Volume2 size={20} />}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"
