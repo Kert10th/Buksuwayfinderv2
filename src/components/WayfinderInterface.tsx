@@ -178,6 +178,91 @@ function SessionHallIcon({
   );
 }
 
+// Elevator pictogram — a pair of closed elevator doors. Outer doorframe,
+// a vertical seam where the two doors meet, and up/down triangles
+// stacked along the seam to indicate elevator function.
+function ElevatorIcon({
+  size = 24,
+  className,
+  color,
+  ...rest
+}: {
+  size?: number;
+  className?: string;
+  color?: string;
+  strokeWidth?: number;
+}) {
+  const c = color ?? 'currentColor';
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="none"
+      className={className}
+      {...rest}
+    >
+      {/* Outer doorframe — door-like aspect ratio */}
+      <rect x="4" y="2" width="16" height="20" rx="0.8" fill="none" stroke={c} strokeWidth="2" strokeLinejoin="round" />
+      {/* Center seam — where the two doors meet */}
+      <line x1="12" y1="2.6" x2="12" y2="21.4" stroke={c} strokeWidth="1.3" strokeLinecap="round" />
+      {/* Up triangle (apex up, centered on seam) */}
+      <path d="M 12 6.4 L 9.2 10.4 L 14.8 10.4 Z" fill={c} />
+      {/* Down triangle (apex down, centered on seam) */}
+      <path d="M 12 17.6 L 9.2 13.6 L 14.8 13.6 Z" fill={c} />
+    </svg>
+  );
+}
+
+// Comfort-room pictogram — male silhouette on the left, female on the
+// right, separated by a vertical divider (the universal restroom sign).
+function ComfortRoomIcon({
+  size = 24,
+  className,
+  color,
+  ...rest
+}: {
+  size?: number;
+  className?: string;
+  color?: string;
+  strokeWidth?: number;
+}) {
+  const c = color ?? 'currentColor';
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="none"
+      className={className}
+      {...rest}
+    >
+      {/* Vertical divider */}
+      <line x1="12" y1="2.8" x2="12" y2="21.2" stroke={c} strokeWidth="1.3" strokeLinecap="round" />
+
+      {/* MALE — left half (centered at x=7) */}
+      <circle cx="7" cy="4.8" r="1.85" fill={c} />
+      {/* Trapezoidal torso/arms — wider at shoulders, narrower at waist */}
+      <path d="M 3.7 7.3 L 10.3 7.3 L 9.6 13.7 L 4.4 13.7 Z" fill={c} />
+      {/* Legs */}
+      <rect x="4.8" y="13.6" width="1.6" height="6.9" rx="0.3" fill={c} />
+      <rect x="7.6" y="13.6" width="1.6" height="6.9" rx="0.3" fill={c} />
+
+      {/* FEMALE — right half (centered at x=17) */}
+      <circle cx="17" cy="4.8" r="1.85" fill={c} />
+      {/* Triangular dress — shoulders flaring out into a wide skirt */}
+      <path d="M 15.4 7.3 L 18.6 7.3 L 21 14.8 L 13 14.8 Z" fill={c} />
+      {/* Legs */}
+      <rect x="15.2" y="14.7" width="1.6" height="5.8" rx="0.3" fill={c} />
+      <rect x="17.2" y="14.7" width="1.6" height="5.8" rx="0.3" fill={c} />
+    </svg>
+  );
+}
+
 
 export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProps) {
   // Ref for the map image element to calculate accurate coordinates
@@ -6815,8 +6900,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   // central hub mirrors the active selection.
                   const CATS = [
                     { key: 'parking-4w' as FacilityType,   label: '4-Wheel Parking',    Icon: Car,         color: '#4A90E2' },
-                    { key: 'comfort-room' as FacilityType, label: 'Comfort Room',        Icon: DoorOpen,    color: '#E6A13A' },
-                    { key: 'elevator' as FacilityType,     label: 'Elevator',            Icon: ArrowUpDown, color: '#7C3AED' },
+                    { key: 'comfort-room' as FacilityType, label: 'Comfort Room',        Icon: ComfortRoomIcon, color: '#E6A13A' },
+                    { key: 'elevator' as FacilityType,     label: 'Elevator',            Icon: ElevatorIcon, color: '#7C3AED' },
                     { key: 'emergency' as FacilityType,    label: 'Emergency',           Icon: MedicalCrossIcon, color: '#DC143C' },
                     { key: 'parking-2w' as FacilityType,   label: 'Motorcycle Parking',  Icon: Bike,        color: '#50C878' },
                   ];
