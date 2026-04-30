@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { toast } from 'sonner';
 import { WayfinderInterface } from './components/WayfinderInterface';
 import { LoginScreen } from './components/LoginScreen';
 import { Toaster } from './components/ui/sonner';
+import { IdleWarningOverlay } from './components/IdleWarningOverlay';
 import { useIdleTimeout } from './hooks/useIdleTimeout';
 
 const IDLE_TIMEOUT_MS = 60_000;
@@ -10,6 +10,7 @@ const IDLE_WARNING_MS = 10_000;
 
 export default function App() {
   const [userRole, setUserRole] = useState<null | 'user' | 'admin'>(null);
+  const [showIdleWarning, setShowIdleWarning] = useState(false);
 
   useIdleTimeout({
     // Only kiosk (regular user) sessions auto-return to the landing screen.
@@ -18,18 +19,10 @@ export default function App() {
     enabled: userRole === 'user',
     timeoutMs: IDLE_TIMEOUT_MS,
     warningMs: IDLE_WARNING_MS,
-    onWarning: () => {
-      toast.warning('Session ending soon', {
-        description: `Returning to home screen in ${IDLE_WARNING_MS / 1000} seconds. Tap anywhere to stay.`,
-        duration: IDLE_WARNING_MS,
-        id: 'idle-warning',
-      });
-    },
-    onActivity: () => {
-      toast.dismiss('idle-warning');
-    },
+    onWarning: () => setShowIdleWarning(true),
+    onActivity: () => setShowIdleWarning(false),
     onTimeout: () => {
-      toast.dismiss('idle-warning');
+      setShowIdleWarning(false);
       setUserRole(null);
     },
   });
@@ -44,7 +37,8 @@ export default function App() {
           onLogout={() => setUserRole(null)}
         />
       )}
-      <Toaster position="top-right" richColors />
+      <IdleWarningOverlay show={showIdleWarning} durationMs={IDLE_WARNING_MS} />
+      <Toaster position="top-right" richColors offset="90px" />
     </>
   );
 }

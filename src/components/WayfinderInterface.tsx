@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef, useTransition, useDeferredValue } from 'react';
-import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, UtensilsCrossed, FileText, Landmark, Sparkles, Pencil, Check, ArrowUp, ArrowUpDown, Video, Film, MicVocal, Warehouse } from 'lucide-react';
+import { Sun, Moon, MapPin, ArrowLeftRight, Search, RotateCcw, X, LogOut, Car, Bike, Stethoscope, MousePointer2, Layers, DoorOpen, Trash2, ChevronDown, BookOpen, UtensilsCrossed, FileText, Landmark, Sparkles, Pencil, Check, ArrowUp, ArrowUpDown, Video, Film, MicVocal, Warehouse, Banknote } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from './ui/select';
@@ -18,6 +18,15 @@ const PUBLIC_MAP_PATH = '/campus-map.png';
 // import { useMapData } from '../hooks/useMapData';
 import { fetchCloudData, uploadCloudData, isCloudSyncConfigured } from '../utils/cloudSync';
 import { cleanupPath } from '../utils/pathCleanup';
+import {
+  playClick,
+  playPop,
+  playToggle,
+  playToggleClose,
+  playSuccess,
+  playSelect,
+  playError,
+} from '../utils/sfx';
 import Fuse from 'fuse.js';
 
 const CLOUD_LAST_PULLED_KEY = 'buksu-cloud-last-pulled';
@@ -42,6 +51,36 @@ interface WayfinderInterfaceProps {
   isAdmin: boolean;
   onLogout: () => void;
 }
+
+// Filled Greek cross — the iconic "medical plus / first-aid" symbol.
+// Drops in wherever a Lucide icon is expected (size, className, color).
+function MedicalCrossIcon({
+  size = 24,
+  className,
+  color,
+  ...rest
+}: {
+  size?: number;
+  className?: string;
+  color?: string;
+  strokeWidth?: number;
+}) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill={color ?? 'currentColor'}
+      stroke="none"
+      className={className}
+      {...rest}
+    >
+      <path d="M9 3 H15 V9 H21 V15 H15 V21 H9 V15 H3 V9 H9 Z" />
+    </svg>
+  );
+}
+
 
 export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProps) {
   // Ref for the map image element to calculate accurate coordinates
@@ -114,6 +153,10 @@ export function WayfinderInterface({ isAdmin, onLogout }: WayfinderInterfaceProp
   const [toLocation, setToLocation] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
   const [showRoute, setShowRoute] = useState(false);
+  // Bumps each time a route is freshly found, used as a React `key` on the
+  // "Navigating to" pill so its green-flash entrance animation replays even
+  // when the pill is already on screen.
+  const [routeFoundKey, setRouteFoundKey] = useState(0);
   const [uiMode, setUiMode] = useState<'search' | 'navigation'>('search');
   const [zoomLevel, setZoomLevel] = useState(1);
   const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
@@ -911,6 +954,40 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   
   // Category Filter State (for user interface)
   const [activeCategory, setActiveCategory] = useState<FacilityType | null>(null);
+  // Quick Access dial expansion — closed by default; emblems only appear
+  // when the user taps the center hub (GoTyme-style reveal).
+  const [quickAccessDialOpen, setQuickAccessDialOpen] = useState(false);
+  // Tracks which emblem was just clicked so we can briefly play the burst /
+  // pop animation before the dial collapses and the filter activates.
+  const [quickAccessClickedKey, setQuickAccessClickedKey] = useState<FacilityType | null>(null);
+  // User-customisable dial position (kiosk wide viewport only). Null falls
+  // back to the default lower-left placement; once the user drags it
+  // anywhere, we persist {x, y} to localStorage so it survives reloads.
+  const QA_POS_STORAGE_KEY = 'buksu-quick-access-pos';
+  const [quickAccessPos, setQuickAccessPos] = useState<{ x: number; y: number } | null>(() => {
+    if (typeof window === 'undefined') return null;
+    try {
+      const stored = window.localStorage.getItem(QA_POS_STORAGE_KEY);
+      if (!stored) return null;
+      const parsed = JSON.parse(stored);
+      if (typeof parsed?.x === 'number' && typeof parsed?.y === 'number') return parsed;
+    } catch {
+      /* ignore */
+    }
+    return null;
+  });
+  // Drag tracking for the dial. `justDragged` is briefly true after a
+  // pointer release that involved actual movement, so the click that
+  // follows the drag (on the hub or an emblem) gets suppressed.
+  const quickAccessDragRef = useRef<{
+    pointerId: number;
+    startPointerX: number;
+    startPointerY: number;
+    origX: number;
+    origY: number;
+    moved: boolean;
+  } | null>(null);
+  const quickAccessJustDraggedRef = useRef(false);
   
   // Edge Editor States (for drawing connections)
   const [isEdgeEditMode] = useState(false);
@@ -2318,6 +2395,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   };
 
   const handleClear = () => {
+    playClick();
     // On wide/kiosk viewport "From" is fixed to the kiosk — reset to it.
     // On mobile users may have picked any starting point — clear to empty.
     setFromLocation(isWideViewport ? kioskLocation : '');
@@ -2346,6 +2424,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   
   const handleFindRoute = () => {
     if (fromLocation && toLocation) {
+      playSuccess();
       startTransition(() => {
         console.log('=== FIND ROUTE CLICKED ===');
         console.log('From:', fromLocation);
@@ -2362,20 +2441,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
         // Switch to navigation mode when route is found
         setUiMode('navigation');
 
-        // Show success toast. If the destination has floor info, headline it
-        // so visitors immediately know to go upstairs.
-        const destFloor = mapNodes[toLocation]?.floor;
-        if (destFloor) {
-          toast.success(`🏢 ${toLocation} is on the ${destFloor}`, {
-            description: `Follow the arrows on the map — then head to the floor above.`,
-            duration: 6000,
-          });
-        } else {
-          toast.success('Route found!', {
-            description: `From ${fromLocation} to ${toLocation}`,
-            duration: 2500,
-          });
-        }
+        // Trigger the "Navigating to" pill's green-flash entrance animation.
+        // The floor (if any) is already highlighted as a prominent gold pill
+        // inside the navigating bar.
+        setRouteFoundKey((k) => k + 1);
 
         // Smooth scroll to the map
         setTimeout(() => {
@@ -2383,6 +2452,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
         }, 100);
       });
     } else {
+      playError();
       toast.error('Please select both locations', {
         description: 'Choose a starting point and destination',
         duration: 2000,
@@ -2395,23 +2465,13 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
   // shouldn't have to also tap "Find Route".
   const handleQuickDestination = (loc: string) => {
     if (!fromLocation || !loc || loc === fromLocation) return;
+    playPop();
     setToLocation(loc);
     startTransition(() => {
       setShowRoute(true);
       setActiveCategory(null);
       setUiMode('navigation');
-      const destFloor = mapNodes[loc]?.floor;
-      if (destFloor) {
-        toast.success(`🏢 ${loc} is on the ${destFloor}`, {
-          description: `Follow the arrows on the map — then head to the floor above.`,
-          duration: 6000,
-        });
-      } else {
-        toast.success('Route found!', {
-          description: `From ${fromLocation} to ${loc}`,
-          duration: 2500,
-        });
-      }
+      setRouteFoundKey((k) => k + 1);
       setTimeout(() => {
         mapRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }, 100);
@@ -2431,6 +2491,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     { names: ['Cafeteria', 'University Cafeteria', 'Rubia Cafeteria'], label: 'Cafeteria', Icon: UtensilsCrossed },
     { names: ['Gymnasium', 'University Gymnasium'], label: 'Gymnasium', Icon: Warehouse },
     { names: ["Registrar's office", 'Registrar'], label: 'Registrar', Icon: FileText },
+    { names: ['Cashier', "Cashier's Office", 'Cashiering Office', 'Cashiering'], label: 'Cashier', Icon: Banknote },
     { names: ['IP Museum'], label: 'IP Museum', Icon: Landmark },
     { names: ['AVC', 'Audio Visual Center'], label: 'AVC', Icon: Video },
     { names: ['Mini Theatre', 'Mini Theater'], label: 'Mini Theatre', Icon: Film },
@@ -2832,7 +2893,9 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       e.preventDefault();
       e.stopPropagation();
 
-      const coords = getCoordinatesFromEvent(e);
+      // Use the zoom/pan-inverted coords so the marker lands exactly
+      // where the admin clicked, even if they've zoomed in or panned.
+      const coords = getViewBoxCoordsFromEvent(e);
       const currentNode = mapNodes[editingLocation];
       console.log(`📍 Editing location: ${editingLocation}, clicked at:`, coords);
       console.log(`📍 Current node coordinates before update:`, currentNode?.coordinates);
@@ -2869,7 +2932,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
       setIsLocationEditMode(false);
     } else if (isEdgeEditMode) {
       // Edge drawing mode: click first location, then second location to create edge
-      const coords = getCoordinatesFromEvent(e);
+      const coords = getViewBoxCoordsFromEvent(e);
       
       // Find closest location to click point - use unified nodes
       let closestLocation: string | null = null;
@@ -3304,6 +3367,82 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               className="space-y-4 transition-all duration-300"
               style={{ padding: 'clamp(1.25rem, 1.8vw, 2rem)' }}
             >
+            <style>{`
+              @property --neon-angle {
+                syntax: '<angle>';
+                initial-value: 0deg;
+                inherits: false;
+              }
+              /* ONE light total, traveling around the search bar, smoothly
+                 gliding down to the destination bar (search-bottom →
+                 destination-top, which are physically adjacent), looping
+                 around it, then resetting back to the search bar.
+                 With the gradient peak now at angle origin (0%/100%),
+                 --neon-angle directly equals the bright spot's clock
+                 position: 0=top, 90=right, 180=bottom, 270=left. */
+              @keyframes neonCycleSearch {
+                0%   { --neon-angle: 0deg;   opacity: 1; }   /* top of search */
+                30%  { --neon-angle: 360deg; opacity: 1; }   /* full lap (back at top) */
+                45%  { --neon-angle: 540deg; opacity: 1; }   /* +180° → BOTTOM of search */
+                55%  { --neon-angle: 540deg; opacity: 0; }   /* fade out at bottom */
+                85%  { --neon-angle: 540deg; opacity: 0; }   /* invisible */
+                90%  { --neon-angle: 0deg;   opacity: 0; }   /* (invisible) reset to top */
+                100% { --neon-angle: 0deg;   opacity: 1; }   /* fade back in at top → loop */
+              }
+              @keyframes neonCycleSelect {
+                0%   { --neon-angle: 0deg;   opacity: 0; }   /* invisible */
+                45%  { --neon-angle: 0deg;   opacity: 0; }
+                55%  { --neon-angle: 0deg;   opacity: 1; }   /* fade in at TOP of destination */
+                85%  { --neon-angle: 360deg; opacity: 1; }   /* full lap, back at top */
+                100% { --neon-angle: 360deg; opacity: 0; }   /* fade out at top */
+              }
+              .neon-gold-border {
+                position: relative;
+                border-radius: 0.75rem;
+                isolation: isolate;
+              }
+              .neon-gold-border::before {
+                content: '';
+                position: absolute;
+                inset: -1.5px;
+                border-radius: calc(0.75rem + 1.5px);
+                padding: 1.5px;
+                /* Single concentrated comet — bright peak sits at the start
+                   (= --neon-angle) so the light's clock position matches the
+                   angle exactly. Soft tail on both sides for a smooth comet. */
+                background: conic-gradient(
+                  from var(--neon-angle),
+                  rgba(255, 245, 200, 1)  0%,
+                  rgba(255, 215, 0, 0.45) 4%,
+                  rgba(255, 215, 0, 0)    10%,
+                  rgba(255, 215, 0, 0)    90%,
+                  rgba(255, 215, 0, 0.45) 96%,
+                  rgba(255, 245, 200, 1)  100%
+                );
+                -webkit-mask:
+                  linear-gradient(#000 0 0) content-box,
+                  linear-gradient(#000 0 0);
+                -webkit-mask-composite: xor;
+                        mask-composite: exclude;
+                pointer-events: none;
+                filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.7));
+                z-index: 0;
+                animation: neonCycleSearch 5s linear infinite;
+              }
+              .neon-gold-border.neon-cycle-select::before {
+                animation: neonCycleSelect 5s linear infinite;
+              }
+              /* Highlight the chevron arrow inside the select trigger so the
+                 destination dropdown is visually clear. */
+              .neon-gold-border [data-slot="select-trigger"] > svg:last-of-type {
+                color: #E6A13A !important;
+                opacity: 1 !important;
+                width: 1.25rem !important;
+                height: 1.25rem !important;
+                stroke-width: 2.75 !important;
+                filter: drop-shadow(0 0 5px rgba(230, 161, 58, 0.65));
+              }
+            `}</style>
             {/* Quick Search */}
             <div>
               <label className="flex items-center gap-2 mb-3">
@@ -3317,20 +3456,22 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     Quick Search
                   </span>
               </label>
-              <div className="relative">
+              <div className="relative neon-gold-border">
                 <Search className="absolute left-4 top-1/2 transform -translate-y-1/2 text-[#00C6FF] z-10" size={20} />
                 <Input
                   ref={searchInputRef}
                   placeholder="Search for a location..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className={`pl-12 rounded-xl border focus:border-[#00C6FF]/50 transition-all ${darkMode ? 'text-white placeholder:text-[#A0AEC0]' : 'text-[#001C38] placeholder:text-[#64748B]'}`}
+                  className={`pl-12 rounded-xl transition-all ${darkMode ? 'text-white placeholder:text-[#A0AEC0]' : 'text-[#001C38] placeholder:text-[#64748B]'}`}
                   style={{
                     height: 'clamp(2.75rem, 3.5vw, 3.75rem)',
                     fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
                     background: darkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.95)',
-                    border: darkMode ? '1px solid rgba(226, 232, 240, 0.3)' : '1px solid rgba(0, 28, 56, 0.15)',
-                    boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
+                    border: '1px solid transparent',
+                    boxShadow: darkMode
+                      ? '0 4px 6px rgba(0, 0, 0, 0.3)'
+                      : '0 2px 4px rgba(0, 28, 56, 0.08)',
                   }}
                 />
 
@@ -3640,18 +3781,22 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   </span>
                 </label>
                 <Select value={toLocation} onValueChange={setToLocation}>
+                  <div className="neon-gold-border neon-cycle-select">
                   <SelectTrigger
-                    className={`rounded-xl border transition-all hover:border-[#00C6FF]/50 focus:border-[#00C6FF]/50 ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
+                    className={`rounded-xl transition-all ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
                     style={{
                       height: 'clamp(2.75rem, 3.5vw, 3.75rem)',
                       fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
                       background: darkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.95)',
-                      border: darkMode ? '1px solid rgba(226, 232, 240, 0.3)' : '1px solid rgba(0, 28, 56, 0.15)',
-                      boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
+                      border: '1px solid transparent',
+                      boxShadow: darkMode
+                        ? '0 4px 6px rgba(0, 0, 0, 0.3)'
+                        : '0 2px 4px rgba(0, 28, 56, 0.08)',
                     }}
                   >
                     <SelectValue placeholder="Select destination" />
                   </SelectTrigger>
+                  </div>
                   <SelectContent
                     className={`backdrop-blur-xl border ${darkMode ? 'text-white' : 'text-[#001C38]'}`}
                     style={{
@@ -3668,21 +3813,50 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                           key={location}
                           value={location}
                           className={darkMode ? 'text-white focus:bg-white/10' : 'text-[#001C38] focus:bg-[#001C38]/5'}
-                        >
-                          <span className="flex items-center gap-2 w-full">
-                            <span className="flex-1 min-w-0 truncate">{location}</span>
-                            {floorBadge && (
+                          // Pad the row's right edge so the absolute badge
+                          // never overlaps the truncated text.
+                          style={{ paddingRight: floorBadge ? '3rem' : undefined }}
+                          // The floor badge goes in `trailing` so it only
+                          // renders in the dropdown row — keeping it out of
+                          // the closed trigger where it was overlapping
+                          // long destination names. Positioning uses
+                          // inline styles because this codebase ships a
+                          // precompiled Tailwind dump that's missing some
+                          // arbitrary/utility classes.
+                          trailing={
+                            floorBadge ? (
                               <span
-                                className="shrink-0 px-1.5 py-0.5 rounded-md text-[10px] font-semibold"
                                 style={{
+                                  position: 'absolute',
+                                  right: '1.75rem',
+                                  top: '50%',
+                                  transform: 'translateY(-50%)',
+                                  padding: '2px 6px',
+                                  borderRadius: '6px',
+                                  fontSize: '10px',
+                                  fontWeight: 600,
                                   background: 'rgba(230, 161, 58, 0.2)',
                                   color: '#E6A13A',
                                   border: '1px solid rgba(230, 161, 58, 0.35)',
+                                  pointerEvents: 'none',
+                                  whiteSpace: 'nowrap',
+                                  letterSpacing: '0.02em',
                                 }}
                               >
                                 {floorBadge}
                               </span>
-                            )}
+                            ) : null
+                          }
+                        >
+                          <span
+                            style={{
+                              display: 'block',
+                              overflow: 'hidden',
+                              textOverflow: 'ellipsis',
+                              whiteSpace: 'nowrap',
+                            }}
+                          >
+                            {location}
                           </span>
                         </SelectItem>
                       );
@@ -3716,22 +3890,28 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               <Button
                 onClick={handleFindRoute}
                 disabled={!fromLocation || !toLocation || isDrawingMode || isPending}
-                className="flex-1 rounded-xl text-white font-bold transition-all duration-300 hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
+                className="flex-1 rounded-2xl text-white font-bold transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0"
                 style={{
                   height: 'clamp(2.75rem, 3.5vw, 3.75rem)',
                   fontSize: 'clamp(0.9rem, 1.05vw, 1.15rem)',
-                  background: 'linear-gradient(81deg, #0075FF 0%, #00C6FF 100%)',
-                  boxShadow: '0 4px 6px rgba(0, 117, 255, 0.3)',
+                  letterSpacing: '0.02em',
+                  background:
+                    'linear-gradient(135deg, #0075FF 0%, #00A8FF 55%, #00C6FF 100%)',
+                  border: '1px solid rgba(255, 255, 255, 0.25)',
+                  boxShadow:
+                    '0 10px 24px rgba(0, 117, 255, 0.4), 0 4px 8px rgba(0, 117, 255, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 4px rgba(0, 0, 0, 0.18)',
                 }}
                 onMouseEnter={(e: React.MouseEvent<HTMLButtonElement>) => {
                   if (!e.currentTarget.disabled) {
                     e.currentTarget.style.transform = 'translateY(-2px)';
-                    e.currentTarget.style.boxShadow = '0 8px 12px rgba(0, 117, 255, 0.4)';
+                    e.currentTarget.style.boxShadow =
+                      '0 14px 30px rgba(0, 117, 255, 0.5), 0 6px 12px rgba(0, 117, 255, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.55), inset 0 -2px 4px rgba(0, 0, 0, 0.18)';
                   }
                 }}
                 onMouseLeave={(e: React.MouseEvent<HTMLButtonElement>) => {
                   e.currentTarget.style.transform = 'translateY(0)';
-                  e.currentTarget.style.boxShadow = '0 4px 6px rgba(0, 117, 255, 0.3)';
+                  e.currentTarget.style.boxShadow =
+                    '0 10px 24px rgba(0, 117, 255, 0.4), 0 4px 8px rgba(0, 117, 255, 0.25), inset 0 1px 0 rgba(255, 255, 255, 0.45), inset 0 -2px 4px rgba(0, 0, 0, 0.18)';
                 }}
               >
                 {isPending ? 'Finding...' : 'Find Route'}
@@ -3740,13 +3920,23 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 onClick={handleClear}
                 variant="outline"
                 disabled={isDrawingMode}
-                className={`px-6 rounded-xl border transition-all ${darkMode ? 'text-white hover:bg-white/10' : 'text-[#001C38] hover:bg-[#001C38]/5'}`}
+                className={`px-6 rounded-2xl transition-all ${darkMode ? 'text-[#FCA5A5] hover:bg-[#EF4444]/15' : 'text-[#B91C1C] hover:bg-[#EF4444]/12'}`}
                 style={{
                   height: 'clamp(2.75rem, 3.5vw, 3.75rem)',
                   fontSize: 'clamp(0.9rem, 1.05vw, 1.15rem)',
-                  border: darkMode ? '1px solid rgba(255, 255, 255, 0.2)' : '1px solid rgba(0, 28, 56, 0.2)',
-                  background: darkMode ? 'rgba(15, 23, 42, 0.9)' : 'rgba(255, 255, 255, 0.95)',
-                  boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
+                  letterSpacing: '0.02em',
+                  fontWeight: 600,
+                  background: darkMode
+                    ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(239, 68, 68, 0.06) 100%)'
+                    : 'linear-gradient(135deg, rgba(239, 68, 68, 0.14) 0%, rgba(239, 68, 68, 0.05) 100%)',
+                  backdropFilter: 'blur(22px) saturate(160%)',
+                  WebkitBackdropFilter: 'blur(22px) saturate(160%)',
+                  border: darkMode
+                    ? '1px solid rgba(239, 68, 68, 0.35)'
+                    : '1px solid rgba(239, 68, 68, 0.40)',
+                  boxShadow: darkMode
+                    ? 'inset 0 1px 0 rgba(255,255,255,0.05), 0 4px 14px rgba(239, 68, 68, 0.18)'
+                    : 'inset 0 1px 0 rgba(255,255,255,0.55), 0 3px 12px rgba(239, 68, 68, 0.14)',
                 }}
               >
                 Clear
@@ -3771,10 +3961,56 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     from { transform: rotate(0deg); }
                     to { transform: rotate(360deg); }
                   }
+                  /* Idle bob — icons gently float up and down */
+                  @keyframes popDestIconBob {
+                    0%, 100% { transform: translateY(0) rotate(0deg); }
+                    50%      { transform: translateY(-3px) rotate(-3deg); }
+                  }
+                  /* Soft halo behind the icon that breathes in/out */
+                  @keyframes popDestIconHalo {
+                    0%, 100% { opacity: 0.35; transform: scale(1); }
+                    50%      { opacity: 0.65; transform: scale(1.15); }
+                  }
+                  /* Diagonal shine sweep that travels across the tile on hover */
+                  @keyframes popDestShineSweep {
+                    0%   { transform: translateX(-150%) skewX(-22deg); opacity: 0; }
+                    20%  { opacity: 1; }
+                    80%  { opacity: 1; }
+                    100% { transform: translateX(280%)  skewX(-22deg); opacity: 0; }
+                  }
+                  /* Click ripple expanding from center */
+                  @keyframes popDestRipple {
+                    0%   { opacity: 0.6; transform: scale(0.4); }
+                    100% { opacity: 0;   transform: scale(2.4); }
+                  }
+                  /* Hover bounce — quick playful pop */
+                  @keyframes popDestHoverPop {
+                    0%   { transform: scale(1) rotate(0deg); }
+                    35%  { transform: scale(1.18) rotate(6deg); }
+                    65%  { transform: scale(0.96) rotate(-4deg); }
+                    100% { transform: scale(1.10) rotate(0deg); }
+                  }
+                  /* Color flash on the border on hover */
+                  @keyframes popDestBorderShimmer {
+                    0%, 100% { border-color: rgba(0, 198, 255, 0.4); }
+                    50%      { border-color: rgba(255, 215, 0, 0.85); }
+                  }
+                  /* Shine sweep activates on hover */
+                  .pop-dest-tile:hover .pop-dest-shine {
+                    animation: popDestShineSweep 0.9s ease-out;
+                  }
+                  /* Bigger, more energetic icon bob on hover */
+                  .pop-dest-tile:hover [data-icon-bobble] {
+                    animation: popDestHoverPop 0.55s cubic-bezier(0.34, 1.7, 0.4, 1) forwards;
+                  }
                 `}</style>
                 <button
                   type="button"
-                  onClick={() => setPopularExpanded((v) => !v)}
+                  onClick={() => {
+                    if (popularExpanded) playToggleClose();
+                    else playToggle();
+                    setPopularExpanded((v) => !v);
+                  }}
                   className="w-full select-none"
                   aria-expanded={popularExpanded}
                   aria-controls="popular-destinations-grid"
@@ -3926,26 +4162,31 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 >
                   {visiblePopularDestinations.map(({ name, label, Icon }, idx) => {
                     const floorBadge = getFloorBadge(mapNodes[name]?.floor);
+                    // Stagger the bob/halo animations across tiles so they
+                    // don't all pulse in unison — feels more alive.
+                    const idleDelay = `${idx * 0.35}s`;
                     return (
                       <button
-                        // Suffix the key with the open/closed state so the
-                        // tile remounts on every open and the entrance
-                        // animation replays from scratch.
                         key={`${name}-${popularExpanded ? 'open' : 'closed'}`}
                         onClick={() => handleQuickDestination(name)}
                         disabled={isDrawingMode || isPending}
-                        className="relative rounded-xl border transition-all flex flex-col items-center justify-center hover:-translate-y-0.5 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:translate-y-0 active:scale-95"
+                        className="pop-dest-tile group relative rounded-xl border transition-all flex flex-col items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed overflow-hidden"
                         style={{
                           minHeight: 'clamp(6rem, 7.5vw, 7.5rem)',
                           padding: '0.85rem 0.4rem 0.65rem',
-                          gap: '0.5rem',
-                          background: darkMode ? 'rgba(15, 23, 42, 0.85)' : 'rgba(255, 255, 255, 0.95)',
-                          border: darkMode ? '1px solid rgba(0, 198, 255, 0.25)' : '1px solid rgba(0, 117, 255, 0.18)',
-                          boxShadow: darkMode ? '0 4px 6px rgba(0, 0, 0, 0.3)' : '0 2px 4px rgba(0, 28, 56, 0.08)',
+                          gap: '0.4rem',
+                          background: darkMode
+                            ? 'linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(8, 47, 73, 0.85) 50%, rgba(15, 23, 42, 0.95) 100%)'
+                            : 'linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(236, 252, 255, 0.92) 50%, rgba(255, 255, 255, 0.98) 100%)',
+                          border: darkMode
+                            ? '1px solid rgba(0, 198, 255, 0.32)'
+                            : '1px solid rgba(0, 117, 255, 0.22)',
+                          boxShadow: darkMode
+                            ? '0 6px 14px rgba(0, 0, 0, 0.32), 0 0 0 1px rgba(0, 198, 255, 0.06) inset'
+                            : '0 4px 10px rgba(0, 28, 56, 0.08), 0 0 0 1px rgba(255, 255, 255, 0.6) inset',
                           color: darkMode ? '#FFFFFF' : '#001C38',
-                          // Staggered fade-up + slight overshoot bounce on open.
-                          // `backwards` keeps the tile in its initial keyframe
-                          // (invisible) until its delay elapses.
+                          transition:
+                            'transform 220ms cubic-bezier(0.34, 1.6, 0.4, 1), border-color 220ms ease, box-shadow 220ms ease, background 220ms ease',
                           animation: popularExpanded
                             ? `popDestTileIn 460ms cubic-bezier(0.22, 1, 0.36, 1) ${idx * 55 + 80}ms backwards`
                             : undefined,
@@ -3953,43 +4194,119 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                         onMouseEnter={(e) => {
                           if (!e.currentTarget.disabled) {
                             e.currentTarget.style.borderColor = '#00C6FF';
+                            e.currentTarget.style.transform = 'translateY(-4px) scale(1.04)';
                             e.currentTarget.style.boxShadow = darkMode
-                              ? '0 8px 14px rgba(0, 198, 255, 0.25)'
-                              : '0 6px 12px rgba(0, 117, 255, 0.18)';
+                              ? '0 14px 28px rgba(0, 198, 255, 0.35), 0 0 18px rgba(0, 198, 255, 0.25), 0 0 0 1px rgba(0, 198, 255, 0.20) inset'
+                              : '0 14px 26px rgba(0, 117, 255, 0.28), 0 0 16px rgba(0, 198, 255, 0.20), 0 0 0 1px rgba(255, 255, 255, 0.7) inset';
+                            e.currentTarget.style.background = darkMode
+                              ? 'linear-gradient(135deg, rgba(0, 198, 255, 0.18) 0%, rgba(15, 23, 42, 0.85) 60%, rgba(0, 198, 255, 0.12) 100%)'
+                              : 'linear-gradient(135deg, rgba(0, 198, 255, 0.14) 0%, rgba(255, 255, 255, 0.95) 60%, rgba(0, 198, 255, 0.10) 100%)';
                           }
                         }}
                         onMouseLeave={(e) => {
-                          e.currentTarget.style.borderColor = darkMode
-                            ? 'rgba(0, 198, 255, 0.25)'
-                            : 'rgba(0, 117, 255, 0.18)';
+                          e.currentTarget.style.borderColor = darkMode ? 'rgba(0, 198, 255, 0.32)' : 'rgba(0, 117, 255, 0.22)';
+                          e.currentTarget.style.transform = 'translateY(0) scale(1)';
                           e.currentTarget.style.boxShadow = darkMode
-                            ? '0 4px 6px rgba(0, 0, 0, 0.3)'
-                            : '0 2px 4px rgba(0, 28, 56, 0.08)';
+                            ? '0 6px 14px rgba(0, 0, 0, 0.32), 0 0 0 1px rgba(0, 198, 255, 0.06) inset'
+                            : '0 4px 10px rgba(0, 28, 56, 0.08), 0 0 0 1px rgba(255, 255, 255, 0.6) inset';
+                          e.currentTarget.style.background = darkMode
+                            ? 'linear-gradient(135deg, rgba(15, 23, 42, 0.92) 0%, rgba(8, 47, 73, 0.85) 50%, rgba(15, 23, 42, 0.95) 100%)'
+                            : 'linear-gradient(135deg, rgba(255, 255, 255, 0.98) 0%, rgba(236, 252, 255, 0.92) 50%, rgba(255, 255, 255, 0.98) 100%)';
+                        }}
+                        onMouseDown={(e) => {
+                          e.currentTarget.style.transform = 'translateY(-1px) scale(0.96)';
+                        }}
+                        onMouseUp={(e) => {
+                          e.currentTarget.style.transform = 'translateY(-4px) scale(1.04)';
                         }}
                         title={name}
                       >
-                        <Icon size={22} className="text-[#00C6FF] shrink-0" />
+                        {/* Diagonal shine sweep — travels across the tile on
+                            hover via the .group-hover pseudo trigger. */}
                         <span
-                          className="font-medium text-center w-full"
+                          aria-hidden
+                          className="pop-dest-shine"
+                          style={{
+                            position: 'absolute',
+                            top: 0,
+                            left: 0,
+                            width: '40%',
+                            height: '100%',
+                            background:
+                              'linear-gradient(110deg, transparent 0%, rgba(0, 198, 255, 0.45) 50%, transparent 100%)',
+                            pointerEvents: 'none',
+                            opacity: 0,
+                          }}
+                        />
+
+                        {/* Icon badge — circular halo behind the icon
+                            breathes; the icon itself bobs gently. */}
+                        <span
+                          style={{
+                            position: 'relative',
+                            width: 38,
+                            height: 38,
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            flexShrink: 0,
+                            zIndex: 1,
+                          }}
+                        >
+                          {/* Pulsing halo */}
+                          <span
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              inset: 0,
+                              borderRadius: 999,
+                              background:
+                                'radial-gradient(circle, rgba(0, 198, 255, 0.40) 0%, rgba(0, 198, 255, 0) 70%)',
+                              animation: `popDestIconHalo 2.4s ease-in-out ${idleDelay} infinite`,
+                              pointerEvents: 'none',
+                            }}
+                          />
+                          {/* Bobbing icon */}
+                          <span
+                            style={{
+                              position: 'relative',
+                              display: 'inline-flex',
+                              animation: `popDestIconBob 2.6s ease-in-out ${idleDelay} infinite`,
+                              filter: 'drop-shadow(0 2px 4px rgba(0, 198, 255, 0.45))',
+                            }}
+                          >
+                            <Icon size={22} className="text-[#00C6FF] shrink-0" />
+                          </span>
+                        </span>
+
+                        <span
+                          className="font-semibold text-center w-full relative"
                           style={{
                             color: darkMode ? '#FFFFFF' : '#001C38',
                             fontSize: '11px',
                             lineHeight: '1.2',
                             wordBreak: 'break-word',
+                            zIndex: 1,
                           }}
                         >
                           {label}
                         </span>
                         {floorBadge && (
                           <span
-                            className="text-center w-full"
+                            className="text-center w-full relative"
                             style={{
                               color: '#E6A13A',
                               fontSize: '9px',
-                              fontWeight: 600,
-                              letterSpacing: '0.05em',
+                              fontWeight: 700,
+                              letterSpacing: '0.08em',
                               lineHeight: 1,
                               marginTop: '-0.15rem',
+                              padding: '2px 6px',
+                              borderRadius: 999,
+                              background: 'rgba(230, 161, 58, 0.15)',
+                              border: '1px solid rgba(230, 161, 58, 0.35)',
+                              display: 'inline-block',
+                              zIndex: 1,
                             }}
                           >
                             {floorBadge}
@@ -4002,215 +4319,6 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               </div>
             )}
 
-            {/* Category Filter Buttons - Quick Access */}
-            <div className="mt-6">
-              <label className="flex items-center gap-3 mb-4">
-                <div 
-                  className="relative flex items-center justify-center"
-                  style={{
-                    width: '32px',
-                    height: '32px',
-                  }}
-                >
-                  {/* Professional icon container with gradient background */}
-                  <div 
-                    className="absolute inset-0 rounded-lg flex items-center justify-center"
-                    style={{
-                      background: 'linear-gradient(135deg, rgba(230, 161, 58, 0.2) 0%, rgba(255, 215, 0, 0.15) 100%)',
-                      border: '1.5px solid rgba(230, 161, 58, 0.4)',
-                      boxShadow: '0 2px 8px rgba(230, 161, 58, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.1)',
-                    }}
-                  >
-                    <Layers 
-                      size={18} 
-                      className="text-[#E6A13A]"
-                      style={{
-                        filter: 'drop-shadow(0 1px 2px rgba(0, 0, 0, 0.2))',
-                      }}
-                    />
-                  </div>
-                </div>
-                <div className="flex flex-col">
-                  <span
-                    className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] text-sm font-semibold tracking-wide"
-                    style={{ color: darkMode ? '#FFFFFF' : '#001C38' }}
-                  >
-                    Quick Access
-                  </span>
-                  <span
-                    className="font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif] text-xs"
-                    style={{ color: darkMode ? 'rgba(255,255,255,0.6)' : 'rgba(0,28,56,0.6)' }}
-                  >
-                    Find facilities quickly
-                  </span>
-                </div>
-              </label>
-              <div className="flex flex-col items-stretch gap-1.5">
-                {([
-                  { key: 'parking-4w' as FacilityType, label: '4-Wheel Parking', Icon: Car, activeBg: '#4A90E2', activeHover: '#3A80D2' },
-                  { key: 'comfort-room' as FacilityType, label: 'Comfort Room', Icon: DoorOpen, activeBg: '#E6A13A', activeHover: '#D19133' },
-                  { key: 'elevator' as FacilityType, label: 'Elevator', Icon: ArrowUpDown, activeBg: '#7C3AED', activeHover: '#6D28D9' },
-                  { key: 'emergency' as FacilityType, label: 'Emergency', Icon: Stethoscope, activeBg: '#DC143C', activeHover: '#CC133C' },
-                  { key: 'parking-2w' as FacilityType, label: 'Motorcycle Parking', Icon: Bike, activeBg: '#50C878', activeHover: '#40B868' },
-                ]).map(({ key, label, Icon, activeBg, activeHover }, idx) => {
-                  const isActive = activeCategory === key;
-                  const count = categoryCounts[key];
-                  const isMuted = count === 0 && !isActive;
-                  const iconDelay = `${idx * 0.3}s`;
-                  // Frosted-glass styling. Inactive chips are kept visually
-                  // neutral (no per-category tinting on the row) so the panel
-                  // doesn't feel busy with five colors at once. The icon tile
-                  // is the only color hint; on hover, a faint color wash
-                  // foreshadows the active state. Active state fills the row
-                  // with the full category gradient.
-                  const inactiveBg = darkMode
-                    ? 'linear-gradient(135deg, rgba(255, 255, 255, 0.07) 0%, rgba(15, 23, 42, 0.45) 100%)'
-                    : 'linear-gradient(135deg, rgba(255, 255, 255, 0.7) 0%, rgba(255, 255, 255, 0.5) 100%)';
-                  const inactiveBorder = darkMode
-                    ? '1px solid rgba(255, 255, 255, 0.10)'
-                    : '1px solid rgba(0, 28, 56, 0.10)';
-                  const inactiveShadow = darkMode
-                    ? 'inset 0 1px 0 rgba(255,255,255,0.05), 0 3px 10px rgba(0, 0, 0, 0.18)'
-                    : 'inset 0 1px 0 rgba(255,255,255,0.6), 0 3px 10px rgba(0, 28, 56, 0.06)';
-                  const activeBgGrad = `linear-gradient(135deg, ${activeBg} 0%, ${activeHover} 100%)`;
-                  const activeShadow = `0 6px 18px ${activeBg}55, inset 0 1px 0 rgba(255,255,255,0.25)`;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => handleCategoryClick(key, label)}
-                      className={`qa-chip w-full text-left transition-all ${isMuted ? 'opacity-60' : ''}`}
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '0.7rem',
-                        padding: '0.55rem 0.7rem 0.55rem 0.55rem',
-                        borderRadius: '0.85rem',
-                        background: isActive ? activeBgGrad : inactiveBg,
-                        backdropFilter: 'blur(14px) saturate(140%)',
-                        WebkitBackdropFilter: 'blur(14px) saturate(140%)',
-                        border: isActive ? `1px solid ${activeBg}` : inactiveBorder,
-                        color: isActive ? '#FFFFFF' : darkMode ? '#FFFFFF' : '#001C38',
-                        cursor: 'pointer',
-                        boxShadow: isActive ? activeShadow : inactiveShadow,
-                        transition:
-                          'background 220ms ease, border-color 220ms ease, transform 140ms ease, box-shadow 220ms ease',
-                      }}
-                      onMouseEnter={(e) => {
-                        if (isActive) {
-                          e.currentTarget.style.background = `linear-gradient(135deg, ${activeHover} 0%, ${activeBg} 100%)`;
-                        } else {
-                          // Faint color wash on hover — foreshadows the
-                          // category color the user is about to activate.
-                          e.currentTarget.style.background = darkMode
-                            ? `linear-gradient(135deg, ${activeBg}1F 0%, rgba(15, 23, 42, 0.5) 100%)`
-                            : `linear-gradient(135deg, ${activeBg}1A 0%, rgba(255, 255, 255, 0.65) 100%)`;
-                          e.currentTarget.style.borderColor = `${activeBg}55`;
-                          e.currentTarget.style.boxShadow = darkMode
-                            ? `inset 0 1px 0 rgba(255,255,255,0.07), 0 6px 16px ${activeBg}26`
-                            : `inset 0 1px 0 rgba(255,255,255,0.7), 0 6px 14px ${activeBg}22`;
-                        }
-                      }}
-                      onMouseLeave={(e) => {
-                        if (isActive) {
-                          e.currentTarget.style.background = activeBgGrad;
-                        } else {
-                          e.currentTarget.style.background = inactiveBg;
-                          e.currentTarget.style.borderColor = darkMode
-                            ? 'rgba(255, 255, 255, 0.10)'
-                            : 'rgba(0, 28, 56, 0.10)';
-                          e.currentTarget.style.boxShadow = inactiveShadow;
-                        }
-                        e.currentTarget.style.transform = 'scale(1)';
-                      }}
-                      onMouseDown={(e) => {
-                        e.currentTarget.style.transform = 'scale(0.985)';
-                      }}
-                      onMouseUp={(e) => {
-                        e.currentTarget.style.transform = 'scale(1)';
-                      }}
-                    >
-                      {/* Icon tile — translucent panel inside the glass card. */}
-                      <span
-                        className="qa-icon flex items-center justify-center shrink-0"
-                        style={{
-                          ['--qa-color' as never]: activeBg,
-                          animationDelay: iconDelay,
-                          width: '32px',
-                          height: '32px',
-                          borderRadius: '0.6rem',
-                          background: isActive
-                            ? 'rgba(255, 255, 255, 0.25)'
-                            : darkMode
-                              ? `${activeBg}33`
-                              : `${activeBg}26`,
-                          border: isActive
-                            ? '1px solid rgba(255, 255, 255, 0.35)'
-                            : `1px solid ${activeBg}55`,
-                          color: isActive ? '#FFFFFF' : activeBg,
-                          boxShadow: isActive
-                            ? 'inset 0 1px 0 rgba(255,255,255,0.3)'
-                            : `inset 0 1px 0 ${activeBg}22`,
-                        }}
-                      >
-                        <Icon size={16} />
-                      </span>
-                      <span
-                        className="flex-1 truncate font-medium"
-                        style={{ fontSize: '0.85rem' }}
-                      >
-                        {label}
-                      </span>
-                      <span
-                        className="shrink-0 text-[10px] font-semibold px-1.5 py-0.5 rounded-full leading-none"
-                        style={{
-                          background: isActive
-                            ? 'rgba(255, 255, 255, 0.25)'
-                            : darkMode
-                              ? 'rgba(255, 255, 255, 0.10)'
-                              : 'rgba(0, 28, 56, 0.08)',
-                          color: isActive ? '#FFFFFF' : darkMode ? 'rgba(255,255,255,0.75)' : 'rgba(0,28,56,0.7)',
-                          minWidth: '1.25rem',
-                          textAlign: 'center',
-                        }}
-                      >
-                        {count}
-                      </span>
-                    </button>
-                  );
-                })}
-                {activeCategory && (
-                  <button
-                    type="button"
-                    onClick={() => setActiveCategory(null)}
-                    className="w-full text-center transition-all"
-                    style={{
-                      padding: '0.45rem 0.7rem',
-                      borderRadius: '0.6rem',
-                      background: 'transparent',
-                      border: darkMode
-                        ? '1px dashed rgba(255, 255, 255, 0.25)'
-                        : '1px dashed rgba(0, 28, 56, 0.25)',
-                      color: darkMode ? 'rgba(255,255,255,0.7)' : 'rgba(0,28,56,0.65)',
-                      fontSize: '0.78rem',
-                      fontWeight: 500,
-                      cursor: 'pointer',
-                      marginTop: '0.25rem',
-                    }}
-                    onMouseEnter={(e) => {
-                      e.currentTarget.style.background = darkMode
-                        ? 'rgba(255, 255, 255, 0.05)'
-                        : 'rgba(0, 28, 56, 0.04)';
-                    }}
-                    onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'transparent';
-                    }}
-                  >
-                    Clear filter
-                  </button>
-                )}
-              </div>
-            </div>
 
             {/* Route Path Editor Controls - Admin Only */}
             {isAdmin && (
@@ -4418,8 +4526,11 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
         ) : isWideViewport ? (
           /* Navigation Mode (kiosk / wide): single floating glassy pill at
              the top center of the viewport. Frosted-glass, all on one row,
-             stays out of the way of the map. */
+             stays out of the way of the map. The `key={routeFoundKey}` forces
+             a remount each time a new route is found so the green-flash entry
+             animation re-plays as the "route found" celebration. */
           <div
+            key={`nav-pill-${routeFoundKey}`}
             className="fixed left-1/2 -translate-x-1/2 z-50 transition-all duration-300"
             style={{
               top: 'clamp(6.25rem, 10vh, 8rem)',
@@ -4427,6 +4538,19 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               maxWidth: 'min(56rem, calc(100vw - 2rem))',
             }}
           >
+            <style>{`
+              @keyframes routeFoundPillEnter {
+                0%   { box-shadow: 0 0 0 0 rgba(16,185,129,0.65), 0 14px 40px rgba(0, 28, 56, 0.12), inset 0 1px 0 rgba(255,255,255,0.55); transform: scale(0.94); }
+                25%  { box-shadow: 0 0 0 8px rgba(16,185,129,0.45), 0 18px 44px rgba(16,185,129,0.30), inset 0 1px 0 rgba(255,255,255,0.55); transform: scale(1.04); }
+                100% { box-shadow: 0 0 0 0 rgba(16,185,129,0), 0 14px 40px rgba(0, 28, 56, 0.12), inset 0 1px 0 rgba(255,255,255,0.55); transform: scale(1); }
+              }
+              @keyframes routeFoundDotMorph {
+                0%   { background: #10B981; transform: scale(0.5); box-shadow: 0 0 0 0 rgba(16,185,129,0.6); }
+                25%  { background: #10B981; transform: scale(1.5); box-shadow: 0 0 10px 4px rgba(16,185,129,0.55); }
+                70%  { background: #10B981; transform: scale(1); box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+                100% { background: #00C6FF; transform: scale(1); box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+              }
+            `}</style>
             <div
               className="flex items-center rounded-full"
               style={{
@@ -4446,11 +4570,18 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 boxShadow: darkMode
                   ? '0 14px 40px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255,255,255,0.08)'
                   : '0 14px 40px rgba(0, 28, 56, 0.12), inset 0 1px 0 rgba(255,255,255,0.55)',
+                animation: 'routeFoundPillEnter 1.6s ease-out',
               }}
             >
               {/* Pulse + label */}
               <div className="flex items-center gap-2 shrink-0">
-                <div className="w-2 h-2 rounded-full bg-[#00C6FF] animate-pulse" />
+                <div
+                  className="w-2 h-2 rounded-full"
+                  style={{
+                    background: '#00C6FF',
+                    animation: 'routeFoundDotMorph 1.6s ease-out forwards, pulse 2s ease-in-out 1.6s infinite',
+                  }}
+                />
                 <span
                   style={{
                     fontSize: 'clamp(0.7rem, 0.8vw, 0.85rem)',
@@ -4477,30 +4608,35 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 {toLocation}
               </span>
 
-              {/* Floor callout — high-contrast solid gold pill with an
-                  upward arrow + subtle pulsing glow so visitors don't
-                  miss that they need to go up. Sized larger than the
-                  surrounding text to draw the eye. */}
-              {mapNodes[toLocation]?.floor && (
-                <span
-                  className="shrink-0 inline-flex items-center rounded-full font-bold uppercase"
-                  style={{
-                    gap: 'clamp(0.3rem, 0.5vw, 0.5rem)',
-                    fontSize: 'clamp(0.85rem, 1.05vw, 1.15rem)',
-                    letterSpacing: '0.04em',
-                    padding: 'clamp(0.4rem, 0.55vw, 0.55rem) clamp(0.85rem, 1.1vw, 1.15rem)',
-                    background: 'linear-gradient(135deg, #F5B83C 0%, #E6A13A 50%, #D08A2A 100%)',
-                    color: '#3B2410',
-                    border: '1px solid rgba(255, 230, 170, 0.55)',
-                    boxShadow: '0 0 0 0 rgba(230, 161, 58, 0.55)',
-                    animation: 'floorPulse 2.4s ease-in-out infinite',
-                  }}
-                  title={`Destination is on ${mapNodes[toLocation].floor}`}
-                >
-                  <ArrowUp size={16} strokeWidth={3} />
-                  {mapNodes[toLocation].floor}
-                </span>
-              )}
+              {/* Floor callout — compact gold chip with up-arrow. Was a
+                  big "↑ 2ND FLOOR" pill; shortened to the abbreviated form
+                  ("2F", "GF", etc.) and slimmed down so it sits beside the
+                  destination name without crowding it. The pulsing glow
+                  still signals "you'll need to go up". */}
+              {mapNodes[toLocation]?.floor && (() => {
+                const shortBadge = getFloorBadge(mapNodes[toLocation].floor);
+                return (
+                  <span
+                    className="shrink-0 inline-flex items-center rounded-full font-bold"
+                    style={{
+                      gap: '0.25rem',
+                      fontSize: 'clamp(0.75rem, 0.9vw, 0.95rem)',
+                      letterSpacing: '0.02em',
+                      padding: 'clamp(0.25rem, 0.35vw, 0.35rem) clamp(0.55rem, 0.75vw, 0.75rem)',
+                      background: 'linear-gradient(135deg, #F5B83C 0%, #E6A13A 50%, #D08A2A 100%)',
+                      color: '#3B2410',
+                      border: '1px solid rgba(255, 230, 170, 0.55)',
+                      boxShadow: '0 0 0 0 rgba(230, 161, 58, 0.55)',
+                      animation: 'floorPulse 2.4s ease-in-out infinite',
+                      lineHeight: 1,
+                    }}
+                    title={`Destination is on ${mapNodes[toLocation].floor}`}
+                  >
+                    <ArrowUp size={13} strokeWidth={3} />
+                    {shortBadge ?? mapNodes[toLocation].floor}
+                  </span>
+                );
+              })()}
 
               {/* End Route — pill button on the right */}
               <Button
@@ -4666,7 +4802,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 if (pendingNewLocationName && isAdmin) {
                   e.preventDefault();
                   e.stopPropagation();
-                  const coords = getCoordinatesFromEvent(e);
+                  const coords = getViewBoxCoordsFromEvent(e);
                   const ok = createNamedLocation(
                     pendingNewLocationName,
                     coords,
@@ -4698,7 +4834,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 if (isLocationEditMode && editingLocation) {
                   e.preventDefault();
                   e.stopPropagation();
-                  const coords = getCoordinatesFromEvent(e);
+                  const coords = getViewBoxCoordsFromEvent(e);
                   const currentNode = mapNodes[editingLocation];
                   console.log(`📍 Location edit click: ${editingLocation} at`, coords);
                   
@@ -5170,7 +5306,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   onClick={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    const coords = getCoordinatesFromEvent(e);
+                    const coords = getViewBoxCoordsFromEvent(e);
                     const currentNode = mapNodes[editingLocation!];
                     console.log(`📍 Location edit overlay click: ${editingLocation} at`, coords);
                     
@@ -5189,7 +5325,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   onMouseDown={(e) => {
                     e.preventDefault();
                     e.stopPropagation();
-                    const coords = getCoordinatesFromEvent(e);
+                    const coords = getViewBoxCoordsFromEvent(e);
                     const currentNode = mapNodes[editingLocation!];
                     console.log(`📍 Location edit overlay mousedown: ${editingLocation} at`, coords);
                     
@@ -5227,7 +5363,7 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                     if (e.button === 0) {
                       e.preventDefault();
                       e.stopPropagation();
-                      const coords = getCoordinatesFromEvent(e);
+                      const coords = getViewBoxCoordsFromEvent(e);
                       createNodeInStampMode(coords, stampMode);
                     }
                   }}
@@ -5364,22 +5500,65 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
 
                   {/* Animated flowing route path line */}
                   {(() => {
-                    // Build path string for both custom and default routes
+                    // Build path string for both custom and default routes.
+                    // We run the raw waypoints through cleanupPath() (RDP
+                    // simplification + light angle-snapping) so small jitters
+                    // and zigzag artifacts from off-grid intermediate nodes
+                    // disappear, then we round each remaining corner with a
+                    // quadratic curve so any kept turns render as gentle
+                    // bends instead of sharp jagged kinks.
                     let pathString = '';
                     const isCustomRoute = routeData?.isCustomRoute === true;
-                    
+
+                    let rawPoints: Array<{ x: number; y: number }> | null = null;
                     if (isCustomRoute && routeData.waypoints && routeData.waypoints.length > 0) {
-                      // Custom route: waypoints are the complete drawn path
-                      pathString = `M ${routeData.waypoints[0].x} ${routeData.waypoints[0].y}`;
-                      for (let i = 1; i < routeData.waypoints.length; i++) {
-                        pathString += ` L ${routeData.waypoints[i].x} ${routeData.waypoints[i].y}`;
-                      }
+                      rawPoints = routeData.waypoints;
                     } else if (routeData?.start && routeData?.waypoints && routeData?.end) {
-                      // Default route: waypoints are intermediate points, need to add start and end
-                      const allPoints = [routeData.start, ...routeData.waypoints, routeData.end];
-                      pathString = `M ${allPoints[0].x} ${allPoints[0].y}`;
-                      for (let i = 1; i < allPoints.length; i++) {
-                        pathString += ` L ${allPoints[i].x} ${allPoints[i].y}`;
+                      rawPoints = [routeData.start, ...routeData.waypoints, routeData.end];
+                    }
+
+                    if (rawPoints && rawPoints.length >= 2) {
+                      // 1) Strip redundant / noisy points and snap near-cardinal
+                      //    segments so straight halls render perfectly straight.
+                      const cleaned = cleanupPath(rawPoints, {
+                        simplifyTolerance: 0.6,
+                        snapThresholdDeg: 8,
+                      });
+
+                      if (cleaned.length === 2) {
+                        // Single straight segment, no rounding needed.
+                        pathString = `M ${cleaned[0].x} ${cleaned[0].y} L ${cleaned[1].x} ${cleaned[1].y}`;
+                      } else {
+                        // 2) Round each interior corner. For every triple
+                        //    (a, b, c) we replace "L b L c" with a quadratic
+                        //    "L b' Q b c'" where b'/c' are short offsets
+                        //    along the incoming/outgoing legs, capped so the
+                        //    radius can't exceed half the shorter leg.
+                        const CORNER_RADIUS = 0.9; // viewBox units
+                        pathString = `M ${cleaned[0].x} ${cleaned[0].y}`;
+                        for (let i = 1; i < cleaned.length - 1; i++) {
+                          const a = cleaned[i - 1];
+                          const b = cleaned[i];
+                          const c = cleaned[i + 1];
+                          const dxAB = b.x - a.x;
+                          const dyAB = b.y - a.y;
+                          const lenAB = Math.hypot(dxAB, dyAB);
+                          const dxBC = c.x - b.x;
+                          const dyBC = c.y - b.y;
+                          const lenBC = Math.hypot(dxBC, dyBC);
+                          if (lenAB === 0 || lenBC === 0) {
+                            pathString += ` L ${b.x} ${b.y}`;
+                            continue;
+                          }
+                          const r = Math.min(CORNER_RADIUS, lenAB / 2, lenBC / 2);
+                          const inX = b.x - (dxAB / lenAB) * r;
+                          const inY = b.y - (dyAB / lenAB) * r;
+                          const outX = b.x + (dxBC / lenBC) * r;
+                          const outY = b.y + (dyBC / lenBC) * r;
+                          pathString += ` L ${inX} ${inY} Q ${b.x} ${b.y} ${outX} ${outY}`;
+                        }
+                        const last = cleaned[cleaned.length - 1];
+                        pathString += ` L ${last.x} ${last.y}`;
                       }
                     }
                     
@@ -6349,6 +6528,770 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
           </div>
         </div>
       )}
+            {/* Category Filter Buttons - Quick Access. On the kiosk (wide
+                viewport) the dial floats over the lower-left of the map
+                content (past the 412px control panel) — sits comfortably
+                in the empty park / forest area south of the campus.
+                On smaller viewports it stays inline in the panel.
+
+                Hidden entirely for admins — they don't need a visitor
+                facility-filter, and the dial otherwise covers the
+                "Quick Add Facility Markers" / "Edit Marker Locations"
+                tools at the bottom of the admin pane. */}
+            {!isAdmin && (
+            <div
+              className={isWideViewport ? '' : 'mt-6'}
+              onPointerDown={(e) => {
+                if (!isWideViewport) return;
+                // Only react to the primary mouse button / a touch / pen.
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
+                const wrapper = e.currentTarget as HTMLDivElement;
+                const rect = wrapper.getBoundingClientRect();
+                quickAccessDragRef.current = {
+                  pointerId: e.pointerId,
+                  startPointerX: e.clientX,
+                  startPointerY: e.clientY,
+                  origX: rect.left,
+                  origY: rect.top,
+                  moved: false,
+                };
+                // NOTE: We deliberately do NOT call setPointerCapture here.
+                // Capturing on pointerdown steals click events from child
+                // buttons, so a plain tap on the hub would never reach its
+                // onClick. We capture lazily inside onPointerMove the
+                // instant the user crosses the drag threshold.
+              }}
+              onPointerMove={(e) => {
+                const drag = quickAccessDragRef.current;
+                if (!drag || drag.pointerId !== e.pointerId) return;
+                const dx = e.clientX - drag.startPointerX;
+                const dy = e.clientY - drag.startPointerY;
+                if (!drag.moved) {
+                  if (Math.hypot(dx, dy) < 5) return;
+                  drag.moved = true;
+                  // Now that we're definitely dragging, lock the pointer
+                  // to the wrapper so we keep getting moves/up even if it
+                  // leaves the wrapper.
+                  try {
+                    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+                  } catch {
+                    /* ignore */
+                  }
+                }
+                const wrapper = e.currentTarget as HTMLDivElement;
+                const w = wrapper.offsetWidth;
+                const h = wrapper.offsetHeight;
+                const padding = 12;
+                const newX = Math.max(
+                  padding,
+                  Math.min(window.innerWidth - w - padding, drag.origX + dx),
+                );
+                const newY = Math.max(
+                  padding,
+                  Math.min(window.innerHeight - h - padding, drag.origY + dy),
+                );
+                setQuickAccessPos({ x: newX, y: newY });
+              }}
+              onPointerUp={(e) => {
+                const drag = quickAccessDragRef.current;
+                if (!drag || drag.pointerId !== e.pointerId) return;
+                quickAccessDragRef.current = null;
+                if (drag.moved) {
+                  // Suppress the click that the browser is about to fire
+                  // on whatever child the drag started on.
+                  quickAccessJustDraggedRef.current = true;
+                  window.setTimeout(() => {
+                    quickAccessJustDraggedRef.current = false;
+                  }, 80);
+                  // Persist the new position.
+                  try {
+                    const wrapper = e.currentTarget as HTMLDivElement;
+                    const rect = wrapper.getBoundingClientRect();
+                    window.localStorage.setItem(
+                      QA_POS_STORAGE_KEY,
+                      JSON.stringify({ x: rect.left, y: rect.top }),
+                    );
+                  } catch {
+                    /* ignore */
+                  }
+                  try {
+                    (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+                  } catch {
+                    /* ignore */
+                  }
+                }
+              }}
+              onPointerCancel={(e) => {
+                const drag = quickAccessDragRef.current;
+                if (drag && drag.pointerId === e.pointerId) {
+                  quickAccessDragRef.current = null;
+                }
+              }}
+              style={
+                isWideViewport
+                  ? {
+                      position: 'fixed',
+                      ...(quickAccessPos
+                        ? { left: `${quickAccessPos.x}px`, top: `${quickAccessPos.y}px` }
+                        : {
+                            bottom: 'clamp(80px, 18vh, 200px)',
+                            left: 'clamp(440px, 30vw, 600px)',
+                          }),
+                      zIndex: 35,
+                      margin: 0,
+                      pointerEvents: 'auto',
+                      cursor: 'grab',
+                      touchAction: 'none',
+                    }
+                  : undefined
+              }
+            >
+              <div className="mt-2 flex flex-col items-center">
+                {(() => {
+                  // Circular rotate dial. Tapping a category spins the wheel
+                  // so that category snaps to the top (12 o'clock); the
+                  // central hub mirrors the active selection.
+                  const CATS = [
+                    { key: 'parking-4w' as FacilityType,   label: '4-Wheel Parking',    Icon: Car,         color: '#4A90E2' },
+                    { key: 'comfort-room' as FacilityType, label: 'Comfort Room',        Icon: DoorOpen,    color: '#E6A13A' },
+                    { key: 'elevator' as FacilityType,     label: 'Elevator',            Icon: ArrowUpDown, color: '#7C3AED' },
+                    { key: 'emergency' as FacilityType,    label: 'Emergency',           Icon: MedicalCrossIcon, color: '#DC143C' },
+                    { key: 'parking-2w' as FacilityType,   label: 'Motorcycle Parking',  Icon: Bike,        color: '#50C878' },
+                  ];
+                  const STEP = 360 / CATS.length;
+                  const activeIdx = activeCategory ? CATS.findIndex((c) => c.key === activeCategory) : -1;
+                  const wheelAngle = activeIdx >= 0 ? -activeIdx * STEP : 0;
+                  const activeCat = activeIdx >= 0 ? CATS[activeIdx] : null;
+                  const CONTAINER = 240;
+                  const RADIUS = 88;
+                  const BTN = 52;
+
+                  const showMarker = quickAccessDialOpen || !!activeCat;
+                  return (
+                    <div
+                      style={{
+                        position: 'relative',
+                        width: quickAccessDialOpen ? CONTAINER : 132,
+                        height: quickAccessDialOpen ? CONTAINER : 132,
+                        margin: '0 auto',
+                        transition:
+                          'width 0.55s cubic-bezier(0.34, 1.5, 0.5, 1), height 0.55s cubic-bezier(0.34, 1.5, 0.5, 1)',
+                      }}
+                    >
+                      <style>{`
+                        @keyframes qaEmblemPop {
+                          0%   { transform: scale(1); }
+                          25%  { transform: scale(0.88); }
+                          55%  { transform: scale(1.22); }
+                          80%  { transform: scale(0.96); }
+                          100% { transform: scale(1.10); }
+                        }
+                        @keyframes qaRippleBurst {
+                          0%   { opacity: 0.9; transform: scale(0.6); border-width: 3px; }
+                          70%  { opacity: 0.5; }
+                          100% { opacity: 0;   transform: scale(2.4); border-width: 0; }
+                        }
+                        @keyframes qaRippleBurstSecondary {
+                          0%   { opacity: 0.7; transform: scale(0.6); border-width: 2px; }
+                          100% { opacity: 0;   transform: scale(2.0); border-width: 0; }
+                        }
+                        @keyframes qaFlashIn {
+                          0%   { opacity: 0; }
+                          40%  { opacity: 0.55; }
+                          100% { opacity: 0; }
+                        }
+                        @keyframes qaSparkleFly {
+                          0%   { opacity: 0; transform: translate(0, 0) scale(0); }
+                          25%  { opacity: 1; transform: translate(calc(var(--sx) * 0.5), calc(var(--sy) * 0.5)) scale(1); }
+                          100% { opacity: 0; transform: translate(var(--sx), var(--sy)) scale(0.4); }
+                        }
+                      `}</style>
+                      {/* Top selector marker — only shown when the dial is
+                          expanded or a category is active. */}
+                      <div
+                        aria-hidden
+                        style={{
+                          position: 'absolute',
+                          top: -2,
+                          left: '50%',
+                          transform: `translateX(-50%) ${showMarker ? 'translateY(0)' : 'translateY(-6px)'}`,
+                          width: 0,
+                          height: 0,
+                          borderLeft: '7px solid transparent',
+                          borderRight: '7px solid transparent',
+                          borderTop: `11px solid ${activeCat ? activeCat.color : '#E6A13A'}`,
+                          filter: `drop-shadow(0 0 6px ${activeCat ? activeCat.color : '#E6A13A'}99)`,
+                          opacity: showMarker ? 1 : 0,
+                          transition:
+                            'border-top-color 0.4s ease, filter 0.4s ease, opacity 0.35s ease, transform 0.4s ease',
+                          zIndex: 4,
+                          pointerEvents: 'none',
+                        }}
+                      />
+
+                      {/* Decorative outer track — only visible when the dial
+                          is expanded so the closed state stays minimal. */}
+                      <div
+                        aria-hidden
+                        style={{
+                          position: 'absolute',
+                          inset: BTN / 2 - 4,
+                          borderRadius: '50%',
+                          background: darkMode
+                            ? 'radial-gradient(circle, rgba(15,23,42,0.55) 0%, rgba(15,23,42,0.15) 100%)'
+                            : 'radial-gradient(circle, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0.15) 100%)',
+                          border: darkMode
+                            ? '1px dashed rgba(255,255,255,0.12)'
+                            : '1px dashed rgba(0,28,56,0.10)',
+                          opacity: quickAccessDialOpen ? 1 : 0,
+                          transform: quickAccessDialOpen ? 'scale(1)' : 'scale(0.6)',
+                          transition: 'opacity 0.4s ease, transform 0.5s cubic-bezier(0.34, 1.4, 0.5, 1)',
+                          pointerEvents: 'none',
+                        }}
+                      />
+
+                      {/* Rotating wheel — children orbit, the wheel itself
+                          spins so the active item lands at 12 o'clock. */}
+                      <div
+                        style={{
+                          position: 'absolute',
+                          inset: 0,
+                          transform: `rotate(${wheelAngle}deg)`,
+                          transition: 'transform 0.6s cubic-bezier(0.34, 1.4, 0.5, 1)',
+                          pointerEvents: quickAccessDialOpen ? 'auto' : 'none',
+                        }}
+                      >
+                        {CATS.map((cat, i) => {
+                          const itemAngle = i * STEP;
+                          const isActive = i === activeIdx;
+                          const count = categoryCounts[cat.key];
+                          const isMuted = count === 0 && !isActive;
+                          const Icon = cat.Icon;
+                          return (
+                            <div
+                              key={cat.key}
+                              style={{
+                                position: 'absolute',
+                                top: '50%',
+                                left: '50%',
+                                width: BTN,
+                                height: BTN,
+                                marginTop: -BTN / 2,
+                                marginLeft: -BTN / 2,
+                                // When closed: emblems sit at the center
+                                // (radius 0) with scale 0 + opacity 0, hidden
+                                // beneath the hub. When open: they fan out to
+                                // the orbit radius with a staggered spring.
+                                transform: quickAccessDialOpen
+                                  ? `rotate(${itemAngle}deg) translateY(-${RADIUS}px) rotate(${-itemAngle - wheelAngle}deg) scale(1)`
+                                  : `rotate(${itemAngle}deg) translateY(0) rotate(${-itemAngle - wheelAngle}deg) scale(0.4)`,
+                                opacity: quickAccessDialOpen ? 1 : 0,
+                                transition:
+                                  'transform 0.55s cubic-bezier(0.34, 1.5, 0.5, 1), opacity 0.35s ease',
+                                transitionDelay: quickAccessDialOpen
+                                  ? `${i * 55}ms`
+                                  : `${(CATS.length - 1 - i) * 30}ms`,
+                              }}
+                            >
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (quickAccessJustDraggedRef.current) return;
+                                  // Play the burst animation first, then
+                                  // commit the filter + close the dial after
+                                  // the user has had a moment to register
+                                  // the visual confirmation.
+                                  if (quickAccessClickedKey) return;
+                                  playSelect();
+                                  setQuickAccessClickedKey(cat.key);
+                                  window.setTimeout(() => {
+                                    handleCategoryClick(cat.key, cat.label);
+                                    setQuickAccessDialOpen(false);
+                                    setQuickAccessClickedKey(null);
+                                  }, 360);
+                                }}
+                                title={`${cat.label}${count ? ` (${count})` : ''}`}
+                                className={`relative w-full h-full rounded-full transition-all ${isMuted ? 'opacity-55' : ''}`}
+                                style={{
+                                  background: isActive
+                                    ? `linear-gradient(135deg, #FFFFFF 0%, ${cat.color} 30%, ${cat.color} 100%)`
+                                    : `linear-gradient(135deg, ${cat.color} 0%, ${cat.color}E0 60%, ${cat.color}C8 100%)`,
+                                  border: isActive
+                                    ? `2px solid #FFFFFF`
+                                    : `1.5px solid rgba(255,255,255,0.5)`,
+                                  color: '#FFFFFF',
+                                  boxShadow: isActive
+                                    ? `0 12px 30px ${cat.color}99, 0 4px 10px rgba(0,0,0,0.30), inset 0 2px 0 rgba(255,255,255,0.55), inset 0 -3px 8px rgba(0,0,0,0.22)`
+                                    : `0 8px 20px ${cat.color}66, 0 3px 8px rgba(0,0,0,0.25), inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -2px 5px rgba(0,0,0,0.20)`,
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  justifyContent: 'center',
+                                  transform: isActive ? 'scale(1.10)' : 'scale(1)',
+                                  transition:
+                                    'background 220ms ease, border-color 220ms ease, transform 220ms ease, box-shadow 220ms ease',
+                                  animation:
+                                    quickAccessClickedKey === cat.key
+                                      ? 'qaEmblemPop 0.55s cubic-bezier(0.34, 1.6, 0.4, 1) both'
+                                      : undefined,
+                                }}
+                                onMouseEnter={(e) => {
+                                  if (quickAccessClickedKey === cat.key) return;
+                                  if (!isActive) e.currentTarget.style.transform = 'scale(1.08)';
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (quickAccessClickedKey === cat.key) return;
+                                  e.currentTarget.style.transform = isActive ? 'scale(1.10)' : 'scale(1)';
+                                }}
+                                onMouseDown={(e) => {
+                                  if (quickAccessClickedKey === cat.key) return;
+                                  e.currentTarget.style.transform = isActive ? 'scale(1.04)' : 'scale(0.92)';
+                                }}
+                                onMouseUp={(e) => {
+                                  if (quickAccessClickedKey === cat.key) return;
+                                  e.currentTarget.style.transform = isActive ? 'scale(1.10)' : 'scale(1)';
+                                }}
+                              >
+                                <Icon size={20} strokeWidth={2.5} style={{ position: 'relative', zIndex: 2 }} />
+
+                                {/* Click-burst overlays — flash + double ring + sparkle dots */}
+                                {quickAccessClickedKey === cat.key && (
+                                  <>
+                                    <span
+                                      aria-hidden
+                                      style={{
+                                        position: 'absolute',
+                                        inset: 0,
+                                        borderRadius: '50%',
+                                        background:
+                                          'radial-gradient(circle, rgba(255,255,255,0.85) 0%, rgba(255,255,255,0.20) 60%, transparent 100%)',
+                                        animation: 'qaFlashIn 0.45s ease-out forwards',
+                                        pointerEvents: 'none',
+                                        zIndex: 1,
+                                      }}
+                                    />
+                                    <span
+                                      aria-hidden
+                                      style={{
+                                        position: 'absolute',
+                                        inset: 0,
+                                        borderRadius: '50%',
+                                        border: `3px solid ${cat.color}`,
+                                        animation: 'qaRippleBurst 0.7s cubic-bezier(0.2, 0.8, 0.4, 1) forwards',
+                                        pointerEvents: 'none',
+                                        zIndex: 0,
+                                      }}
+                                    />
+                                    <span
+                                      aria-hidden
+                                      style={{
+                                        position: 'absolute',
+                                        inset: 0,
+                                        borderRadius: '50%',
+                                        border: `2px solid ${cat.color}`,
+                                        animation:
+                                          'qaRippleBurstSecondary 0.75s cubic-bezier(0.2, 0.8, 0.4, 1) 0.12s forwards',
+                                        pointerEvents: 'none',
+                                        zIndex: 0,
+                                      }}
+                                    />
+                                    {[
+                                      { x: 26, y: -22 },
+                                      { x: -26, y: -22 },
+                                      { x: 30, y: 0 },
+                                      { x: -30, y: 0 },
+                                      { x: 22, y: 24 },
+                                      { x: -22, y: 24 },
+                                    ].map((p, si) => (
+                                      <span
+                                        key={si}
+                                        aria-hidden
+                                        style={{
+                                          position: 'absolute',
+                                          top: '50%',
+                                          left: '50%',
+                                          width: 5,
+                                          height: 5,
+                                          marginTop: -2.5,
+                                          marginLeft: -2.5,
+                                          borderRadius: 999,
+                                          background: cat.color,
+                                          boxShadow: `0 0 6px ${cat.color}cc`,
+                                          ['--sx' as string]: `${p.x}px`,
+                                          ['--sy' as string]: `${p.y}px`,
+                                          animation: `qaSparkleFly 0.7s cubic-bezier(0.2, 0.7, 0.4, 1) ${0.05 + si * 0.025}s forwards`,
+                                          pointerEvents: 'none',
+                                          zIndex: 1,
+                                        }}
+                                      />
+                                    ))}
+                                  </>
+                                )}
+
+                                {count > 0 && (
+                                  <span
+                                    style={{
+                                      position: 'absolute',
+                                      top: -4,
+                                      right: -4,
+                                      minWidth: 18,
+                                      height: 18,
+                                      padding: '0 5px',
+                                      borderRadius: 999,
+                                      background: isActive ? '#FFFFFF' : cat.color,
+                                      color: isActive ? cat.color : '#FFFFFF',
+                                      fontSize: 10,
+                                      fontWeight: 800,
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      justifyContent: 'center',
+                                      boxShadow: '0 2px 6px rgba(0,0,0,0.30)',
+                                      border: '1.5px solid rgba(255,255,255,0.55)',
+                                      lineHeight: 1,
+                                      zIndex: 3,
+                                    }}
+                                  >
+                                    {count}
+                                  </span>
+                                )}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Idle attention effects — only when dial is closed
+                          AND no filter is active. Two pulsing gold rings,
+                          orbiting sparkle dots, and a gentle breathing
+                          scale on the hub itself signal "tap me" without
+                          dominating the panel. */}
+                      {!quickAccessDialOpen && !activeCat && (
+                        <>
+                          <style>{`
+                            @keyframes qaIdlePulseRing {
+                              0%   { opacity: 0.65; transform: translate(-50%, -50%) scale(0.78); }
+                              80%  { opacity: 0;    transform: translate(-50%, -50%) scale(1.55); }
+                              100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.55); }
+                            }
+                            @keyframes qaIdleHubBreathe {
+                              0%, 100% { transform: translate(-50%, -50%) scale(1.05); }
+                              50%      { transform: translate(-50%, -50%) scale(1.12); }
+                            }
+                            @keyframes qaIdleSparkleOrbit {
+                              from { transform: translate(-50%, -50%) rotate(0deg); }
+                              to   { transform: translate(-50%, -50%) rotate(360deg); }
+                            }
+                            @keyframes qaIdleSparkleTwinkle {
+                              0%, 100% { opacity: 0.25; transform: scale(0.6); }
+                              50%      { opacity: 1;    transform: scale(1.2); }
+                            }
+                            @keyframes qaIdleHaloGlow {
+                              0%, 100% { box-shadow: 0 0 22px rgba(230,161,58,0.30), 0 0 0 0 rgba(255,215,0,0); }
+                              50%      { box-shadow: 0 0 38px rgba(230,161,58,0.65), 0 0 0 6px rgba(255,215,0,0.18); }
+                            }
+                          `}</style>
+                          {/* Pulse rings (two staggered) */}
+                          <span
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              top: '50%',
+                              left: '50%',
+                              width: 108,
+                              height: 108,
+                              marginTop: 0,
+                              marginLeft: 0,
+                              borderRadius: '50%',
+                              border: '2px solid rgba(230, 161, 58, 0.7)',
+                              animation: 'qaIdlePulseRing 2.4s ease-out infinite',
+                              pointerEvents: 'none',
+                              zIndex: 2,
+                              filter: 'drop-shadow(0 0 6px rgba(230,161,58,0.55))',
+                            }}
+                          />
+                          <span
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              top: '50%',
+                              left: '50%',
+                              width: 108,
+                              height: 108,
+                              borderRadius: '50%',
+                              border: '2px solid rgba(255, 215, 0, 0.55)',
+                              animation: 'qaIdlePulseRing 2.4s ease-out 1.2s infinite',
+                              pointerEvents: 'none',
+                              zIndex: 2,
+                              filter: 'drop-shadow(0 0 4px rgba(255,215,0,0.45))',
+                            }}
+                          />
+                          {/* Orbiting sparkles — 4 tiny dots circling the hub */}
+                          <div
+                            aria-hidden
+                            style={{
+                              position: 'absolute',
+                              top: '50%',
+                              left: '50%',
+                              width: 140,
+                              height: 140,
+                              marginTop: 0,
+                              marginLeft: 0,
+                              animation: 'qaIdleSparkleOrbit 6s linear infinite',
+                              pointerEvents: 'none',
+                              zIndex: 4,
+                              transformOrigin: '0 0',
+                            }}
+                          >
+                            {[0, 90, 180, 270].map((deg, i) => (
+                              <span
+                                key={deg}
+                                style={{
+                                  position: 'absolute',
+                                  top: 0,
+                                  left: 0,
+                                  width: 6,
+                                  height: 6,
+                                  marginTop: -3,
+                                  marginLeft: -3,
+                                  borderRadius: 999,
+                                  background:
+                                    i % 2 === 0
+                                      ? 'rgba(255, 215, 0, 0.95)'
+                                      : 'rgba(255, 245, 200, 0.85)',
+                                  boxShadow:
+                                    i % 2 === 0
+                                      ? '0 0 8px rgba(255, 215, 0, 0.85)'
+                                      : '0 0 6px rgba(255, 245, 200, 0.7)',
+                                  transform: `rotate(${deg}deg) translateY(-70px)`,
+                                  animation: `qaIdleSparkleTwinkle 1.8s ease-in-out ${i * 0.45}s infinite`,
+                                }}
+                              />
+                            ))}
+                          </div>
+                        </>
+                      )}
+
+                      {/* Center hub — click to expand/collapse the dial.
+                          When dial is closed and no filter is active, this
+                          is the ONLY thing visible (clean, GoTyme-style).
+                          Glassy frosted body with gold-tinted gradient. */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (quickAccessJustDraggedRef.current) return;
+                          if (quickAccessDialOpen) playToggleClose();
+                          else playToggle();
+                          setQuickAccessDialOpen((v) => !v);
+                        }}
+                        aria-expanded={quickAccessDialOpen}
+                        aria-label={quickAccessDialOpen ? 'Close quick access' : 'Open quick access'}
+                        style={{
+                          position: 'absolute',
+                          top: '50%',
+                          left: '50%',
+                          transform: `translate(-50%, -50%) ${quickAccessDialOpen ? 'scale(1)' : 'scale(1.05)'}`,
+                          width: 108,
+                          height: 108,
+                          borderRadius: '50%',
+                          background: activeCat
+                            ? darkMode
+                              ? `linear-gradient(135deg, ${activeCat.color}30 0%, rgba(255,255,255,0.05) 55%, ${activeCat.color}1A 100%)`
+                              : `linear-gradient(135deg, ${activeCat.color}38 0%, rgba(255,255,255,0.55) 55%, ${activeCat.color}1F 100%)`
+                            : darkMode
+                              ? 'linear-gradient(135deg, rgba(255, 215, 0, 0.20) 0%, rgba(255,255,255,0.04) 50%, rgba(230, 161, 58, 0.14) 100%)'
+                              : 'linear-gradient(135deg, rgba(255, 215, 0, 0.30) 0%, rgba(255,255,255,0.55) 50%, rgba(230, 161, 58, 0.16) 100%)',
+                          backdropFilter: 'blur(28px) saturate(180%)',
+                          WebkitBackdropFilter: 'blur(28px) saturate(180%)',
+                          border: activeCat
+                            ? `1.5px solid ${activeCat.color}99`
+                            : darkMode
+                              ? '1.5px solid rgba(230, 161, 58, 0.55)'
+                              : '1.5px solid rgba(230, 161, 58, 0.65)',
+                          boxShadow: activeCat
+                            ? `0 0 28px ${activeCat.color}55, 0 10px 28px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -2px 6px rgba(0,0,0,0.16)`
+                            : darkMode
+                              ? '0 10px 28px rgba(0, 0, 0, 0.32), 0 0 22px rgba(230,161,58,0.32), inset 0 1px 0 rgba(255,255,255,0.20), inset 0 -2px 6px rgba(0,0,0,0.18)'
+                              : '0 10px 28px rgba(230,161,58,0.28), 0 0 18px rgba(230,161,58,0.22), inset 0 1px 0 rgba(255,255,255,0.85), inset 0 -1px 3px rgba(230,161,58,0.10)',
+                          display: 'flex',
+                          flexDirection: 'column',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 3,
+                          zIndex: 3,
+                          textAlign: 'center',
+                          padding: '0 8px',
+                          cursor: 'pointer',
+                          overflow: 'hidden',
+                          transition:
+                            'transform 0.5s cubic-bezier(0.34, 1.5, 0.5, 1), border-color 0.4s ease, box-shadow 0.4s ease, background 0.4s ease',
+                          // Idle attention animations: breathe + subtle gold
+                          // halo pulse only when the dial is closed and no
+                          // filter is active. Stops once the user engages.
+                          animation:
+                            !quickAccessDialOpen && !activeCat
+                              ? 'qaIdleHubBreathe 2.6s ease-in-out infinite, qaIdleHaloGlow 2.6s ease-in-out infinite'
+                              : undefined,
+                        }}
+                        onMouseEnter={(e) => {
+                          if (!quickAccessDialOpen) {
+                            e.currentTarget.style.transform = 'translate(-50%, -50%) scale(1.10)';
+                          }
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.transform = `translate(-50%, -50%) ${quickAccessDialOpen ? 'scale(1)' : 'scale(1.05)'}`;
+                        }}
+                      >
+                        {/* Glass top sheen */}
+                        <span
+                          aria-hidden
+                          style={{
+                            position: 'absolute',
+                            top: 4,
+                            left: '12%',
+                            right: '12%',
+                            height: '38%',
+                            borderRadius: '999px',
+                            background:
+                              'linear-gradient(180deg, rgba(255,255,255,0.55) 0%, rgba(255,255,255,0) 100%)',
+                            opacity: darkMode ? 0.25 : 0.55,
+                            pointerEvents: 'none',
+                            filter: 'blur(2px)',
+                          }}
+                        />
+                        {activeCat ? (
+                          <>
+                            <activeCat.Icon size={22} color={activeCat.color} strokeWidth={2.5} />
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 800,
+                                color: activeCat.color,
+                                letterSpacing: '0.06em',
+                                textTransform: 'uppercase',
+                                lineHeight: 1.15,
+                              }}
+                            >
+                              {activeCat.label}
+                            </span>
+                            <span
+                              style={{
+                                fontSize: 9,
+                                color: darkMode ? 'rgba(255,255,255,0.55)' : 'rgba(0,28,56,0.55)',
+                                letterSpacing: '0.08em',
+                                fontWeight: 600,
+                              }}
+                            >
+                              {categoryCounts[activeCat.key]} found
+                            </span>
+                          </>
+                        ) : (
+                          <>
+                            <Layers
+                              size={26}
+                              className="text-[#E6A13A]"
+                              style={{
+                                transition: 'transform 0.4s cubic-bezier(0.34, 1.5, 0.5, 1)',
+                                transform: quickAccessDialOpen ? 'rotate(180deg) scale(0.85)' : 'rotate(0deg) scale(1)',
+                              }}
+                            />
+                            <span
+                              style={{
+                                fontSize: 10,
+                                fontWeight: 800,
+                                color: darkMode ? '#FFFFFF' : '#001C38',
+                                letterSpacing: '0.10em',
+                                textTransform: 'uppercase',
+                                lineHeight: 1.15,
+                              }}
+                            >
+                              {quickAccessDialOpen ? 'Pick one' : 'Quick Access'}
+                            </span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  );
+                })()}
+
+                {activeCategory && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      playClick();
+                      setActiveCategory(null);
+                    }}
+                    className="mt-4 inline-flex items-center justify-center gap-2 transition-all"
+                    style={{
+                      padding: '0.55rem 1.25rem 0.55rem 1rem',
+                      borderRadius: '999px',
+                      background: darkMode
+                        ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.18) 0%, rgba(239, 68, 68, 0.06) 100%)'
+                        : 'linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(239, 68, 68, 0.05) 100%)',
+                      backdropFilter: 'blur(14px) saturate(160%)',
+                      WebkitBackdropFilter: 'blur(14px) saturate(160%)',
+                      border: darkMode
+                        ? '1px solid rgba(239, 68, 68, 0.45)'
+                        : '1px solid rgba(239, 68, 68, 0.50)',
+                      color: darkMode ? '#FCA5A5' : '#B91C1C',
+                      fontSize: '0.8rem',
+                      fontWeight: 700,
+                      letterSpacing: '0.04em',
+                      cursor: 'pointer',
+                      boxShadow: darkMode
+                        ? 'inset 0 1px 0 rgba(255,255,255,0.06), 0 4px 14px rgba(239, 68, 68, 0.20)'
+                        : 'inset 0 1px 0 rgba(255,255,255,0.55), 0 4px 14px rgba(239, 68, 68, 0.18)',
+                      transition: 'transform 160ms cubic-bezier(0.22, 1, 0.36, 1), background 200ms ease, border-color 200ms ease, box-shadow 200ms ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = darkMode
+                        ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.28) 0%, rgba(239, 68, 68, 0.12) 100%)'
+                        : 'linear-gradient(135deg, rgba(239, 68, 68, 0.22) 0%, rgba(239, 68, 68, 0.08) 100%)';
+                      e.currentTarget.style.borderColor = 'rgba(239, 68, 68, 0.70)';
+                      e.currentTarget.style.boxShadow = darkMode
+                        ? 'inset 0 1px 0 rgba(255,255,255,0.08), 0 8px 22px rgba(239, 68, 68, 0.32)'
+                        : 'inset 0 1px 0 rgba(255,255,255,0.6), 0 8px 22px rgba(239, 68, 68, 0.28)';
+                      e.currentTarget.style.transform = 'translateY(-1px)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = darkMode
+                        ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.18) 0%, rgba(239, 68, 68, 0.06) 100%)'
+                        : 'linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(239, 68, 68, 0.05) 100%)';
+                      e.currentTarget.style.borderColor = darkMode
+                        ? 'rgba(239, 68, 68, 0.45)'
+                        : 'rgba(239, 68, 68, 0.50)';
+                      e.currentTarget.style.boxShadow = darkMode
+                        ? 'inset 0 1px 0 rgba(255,255,255,0.06), 0 4px 14px rgba(239, 68, 68, 0.20)'
+                        : 'inset 0 1px 0 rgba(255,255,255,0.55), 0 4px 14px rgba(239, 68, 68, 0.18)';
+                      e.currentTarget.style.transform = 'translateY(0)';
+                    }}
+                    onMouseDown={(e) => {
+                      e.currentTarget.style.transform = 'translateY(0) scale(0.97)';
+                    }}
+                    onMouseUp={(e) => {
+                      e.currentTarget.style.transform = 'translateY(-1px) scale(1)';
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        width: 20,
+                        height: 20,
+                        borderRadius: 999,
+                        background: darkMode ? 'rgba(239, 68, 68, 0.35)' : 'rgba(239, 68, 68, 0.20)',
+                        border: '1px solid rgba(239, 68, 68, 0.55)',
+                      }}
+                    >
+                      <X size={12} strokeWidth={3} />
+                    </span>
+                    Clear filter
+                  </button>
+                )}
+              </div>
+            </div>
+            )}
+
     </div>
   );
 }

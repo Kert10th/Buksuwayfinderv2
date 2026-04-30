@@ -105,8 +105,17 @@ function SelectLabel({
 function SelectItem({
   className,
   children,
+  trailing,
   ...props
-}: React.ComponentProps<typeof SelectPrimitive.Item>) {
+}: React.ComponentProps<typeof SelectPrimitive.Item> & {
+  // Optional content rendered to the right of the item label INSIDE the
+  // dropdown row only. Unlike `children` (which Radix wraps in
+  // <ItemText> and also renders inside the closed trigger), `trailing`
+  // is a sibling of <ItemText>, so it appears in the dropdown but not
+  // in the closed-state SelectValue. Use this for things like floor
+  // badges that should not crowd the trigger's truncated text.
+  trailing?: React.ReactNode;
+}) {
   return (
     <SelectPrimitive.Item
       data-slot="select-item"
@@ -122,6 +131,7 @@ function SelectItem({
         </SelectPrimitive.ItemIndicator>
       </span>
       <SelectPrimitive.ItemText>{children}</SelectPrimitive.ItemText>
+      {trailing}
     </SelectPrimitive.Item>
   );
 }
