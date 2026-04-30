@@ -1725,6 +1725,17 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
     });
   };
 
+  // Compact date for narrow (mobile) viewports: "Thu, Apr 30" — fits above
+  // the time in a stacked cluster so the header still shows the date but
+  // doesn't push the right-side buttons off-screen.
+  const formatDateMobile = (date: Date) => {
+    return date.toLocaleDateString('en-US', {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric',
+    });
+  };
+
   // Default/seed locations — the buildings that ship with the app. Admin-added
   // locations live in mapNodes (category = undefined or 'default') and are
   // folded into the `locations` list below via useMemo.
@@ -3325,8 +3336,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
           // padding, so the logo visually labels the "Quick Search" row
           // inside the sidebar below it. Right padding mirrors it for
           // symmetric spacing of the date/time cluster on the opposite side.
-          paddingLeft: 'calc(1rem + clamp(1.25rem, 1.8vw, 2rem))',
-          paddingRight: 'calc(1rem + clamp(1.25rem, 1.8vw, 2rem))',
+          // The clamp min is small so mobile viewports keep enough room
+          // for the date/time + button cluster on the right.
+          paddingLeft: isMobileViewport ? '0.75rem' : 'calc(1rem + clamp(1.25rem, 1.8vw, 2rem))',
+          paddingRight: isMobileViewport ? '0.75rem' : 'calc(1rem + clamp(1.25rem, 1.8vw, 2rem))',
           // Tighter vertical padding now that the header only holds a logo.
           paddingTop: 'clamp(0.65rem, 1.2vh, 1.15rem)',
           paddingBottom: 'clamp(0.65rem, 1.2vh, 1.15rem)',
@@ -3336,7 +3349,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
           <div className="shrink-0">
             <BrandLogo darkMode={darkMode} />
           </div>
-          <div className="flex items-center shrink-0" style={{ gap: 'clamp(0.75rem, 1vw, 1.25rem)' }}>
+          <div
+            className="flex items-center shrink-0"
+            style={{ gap: isMobileViewport ? '0.4rem' : 'clamp(0.75rem, 1vw, 1.25rem)' }}
+          >
             {/* Kiosk location pill — replaces the FROM control on wide kiosks. */}
             {isWideViewport && kioskLocation && (
               <div
@@ -3369,42 +3385,68 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 </span>
               </div>
             )}
-            {/* Date and Time Display — horizontal on tablet+, compact single-line time on mobile */}
-            <div
-              className="flex items-baseline font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
-              style={{ gap: 'clamp(0.5rem, 0.8vw, 0.9rem)' }}
-            >
-              {!isMobileViewport && (
-                <>
-                  <span
-                    style={{
-                      fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
-                      color: darkMode ? '#A0AEC0' : '#475569',
-                    }}
-                  >
-                    {formatDate(currentDateTime)}
-                  </span>
-                  <span
-                    aria-hidden
-                    style={{
-                      color: darkMode ? 'rgba(255,255,255,0.3)' : 'rgba(0,28,56,0.3)',
-                      fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
-                    }}
-                  >
-                    •
-                  </span>
-                </>
-              )}
-              <span
-                className="font-semibold whitespace-nowrap"
-                style={{
-                  fontSize: 'clamp(0.95rem, 1.15vw, 1.25rem)',
-                  color: darkMode ? '#FFFFFF' : '#001C38',
-                }}
+            {/* Date and Time Display — horizontal on tablet+, stacked
+                (date above time, right-aligned) on mobile so both fit in
+                the header without crowding the icon buttons. */}
+            {isMobileViewport ? (
+              <div
+                className="flex flex-col items-end font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
+                style={{ lineHeight: 1.05 }}
               >
-                {isMobileViewport ? formatTimeShort(currentDateTime) : formatTime(currentDateTime)}
-              </span>
-            </div>
+                <span
+                  className="whitespace-nowrap"
+                  style={{
+                    fontSize: '0.7rem',
+                    fontWeight: 500,
+                    letterSpacing: '0.02em',
+                    color: darkMode ? '#A0AEC0' : '#475569',
+                  }}
+                >
+                  {formatDateMobile(currentDateTime)}
+                </span>
+                <span
+                  className="font-semibold whitespace-nowrap"
+                  style={{
+                    fontSize: '0.95rem',
+                    color: darkMode ? '#FFFFFF' : '#001C38',
+                  }}
+                >
+                  {formatTimeShort(currentDateTime)}
+                </span>
+              </div>
+            ) : (
+              <div
+                className="flex items-baseline font-['Inter',-apple-system,BlinkMacSystemFont,'SF Pro Display','SF Pro Text',system-ui,sans-serif]"
+                style={{ gap: 'clamp(0.5rem, 0.8vw, 0.9rem)' }}
+              >
+                <span
+                  style={{
+                    fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
+                    color: darkMode ? '#A0AEC0' : '#475569',
+                  }}
+                >
+                  {formatDate(currentDateTime)}
+                </span>
+                <span
+                  aria-hidden
+                  style={{
+                    color: darkMode ? 'rgba(255,255,255,0.3)' : 'rgba(0,28,56,0.3)',
+                    fontSize: 'clamp(0.875rem, 1vw, 1.125rem)',
+                  }}
+                >
+                  •
+                </span>
+                <span
+                  className="font-semibold whitespace-nowrap"
+                  style={{
+                    fontSize: 'clamp(0.95rem, 1.15vw, 1.25rem)',
+                    color: darkMode ? '#FFFFFF' : '#001C38',
+                  }}
+                >
+                  {formatTime(currentDateTime)}
+                </span>
+              </div>
+            )}
             <Button
               variant="ghost"
               size="icon"
