@@ -3368,79 +3368,72 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               style={{ padding: 'clamp(1.25rem, 1.8vw, 2rem)' }}
             >
             <style>{`
-              @property --neon-angle {
-                syntax: '<angle>';
-                initial-value: 0deg;
-                inherits: false;
+              /* Lightweight breathing borders — search bar pulses CYAN
+                 (matches the search icon), destination select pulses
+                 GOLD (matches the "target / destination" accent). The
+                 two are 1.75s out of phase so the glow visibly hands
+                 off between them. box-shadow animation is GPU-cheap
+                 (no mask, no conic, no backdrop-filter), so this stays
+                 smooth on weaker kiosk GPUs. */
+              @keyframes cyanBreathe {
+                0%, 100% {
+                  box-shadow:
+                    0 0 0 1.5px rgba(0, 198, 255, 0.45),
+                    0 0 4px rgba(0, 198, 255, 0.12);
+                }
+                50% {
+                  box-shadow:
+                    0 0 0 1.5px rgba(0, 230, 255, 0.85),
+                    0 0 14px rgba(0, 198, 255, 0.50);
+                }
               }
-              /* ONE light total, traveling around the search bar, smoothly
-                 gliding down to the destination bar (search-bottom →
-                 destination-top, which are physically adjacent), looping
-                 around it, then resetting back to the search bar.
-                 With the gradient peak now at angle origin (0%/100%),
-                 --neon-angle directly equals the bright spot's clock
-                 position: 0=top, 90=right, 180=bottom, 270=left. */
-              @keyframes neonCycleSearch {
-                0%   { --neon-angle: 0deg;   opacity: 1; }   /* top of search */
-                30%  { --neon-angle: 360deg; opacity: 1; }   /* full lap (back at top) */
-                45%  { --neon-angle: 540deg; opacity: 1; }   /* +180° → BOTTOM of search */
-                55%  { --neon-angle: 540deg; opacity: 0; }   /* fade out at bottom */
-                85%  { --neon-angle: 540deg; opacity: 0; }   /* invisible */
-                90%  { --neon-angle: 0deg;   opacity: 0; }   /* (invisible) reset to top */
-                100% { --neon-angle: 0deg;   opacity: 1; }   /* fade back in at top → loop */
-              }
-              @keyframes neonCycleSelect {
-                0%   { --neon-angle: 0deg;   opacity: 0; }   /* invisible */
-                45%  { --neon-angle: 0deg;   opacity: 0; }
-                55%  { --neon-angle: 0deg;   opacity: 1; }   /* fade in at TOP of destination */
-                85%  { --neon-angle: 360deg; opacity: 1; }   /* full lap, back at top */
-                100% { --neon-angle: 360deg; opacity: 0; }   /* fade out at top */
+              @keyframes goldBreathe {
+                0%, 100% {
+                  box-shadow:
+                    0 0 0 1.5px rgba(230, 161, 58, 0.45),
+                    0 0 4px rgba(230, 161, 58, 0.12);
+                }
+                50% {
+                  box-shadow:
+                    0 0 0 1.5px rgba(255, 215, 0, 0.85),
+                    0 0 14px rgba(255, 215, 0, 0.45);
+                }
               }
               .neon-gold-border {
                 position: relative;
                 border-radius: 0.75rem;
-                isolation: isolate;
+                /* Default = search bar = cyan */
+                box-shadow:
+                  0 0 0 1.5px rgba(0, 198, 255, 0.45),
+                  0 0 4px rgba(0, 198, 255, 0.12);
+                animation: cyanBreathe 3.5s ease-in-out infinite;
               }
-              .neon-gold-border::before {
-                content: '';
-                position: absolute;
-                inset: -1.5px;
-                border-radius: calc(0.75rem + 1.5px);
-                padding: 1.5px;
-                /* Single concentrated comet — bright peak sits at the start
-                   (= --neon-angle) so the light's clock position matches the
-                   angle exactly. Soft tail on both sides for a smooth comet. */
-                background: conic-gradient(
-                  from var(--neon-angle),
-                  rgba(255, 245, 200, 1)  0%,
-                  rgba(255, 215, 0, 0.45) 4%,
-                  rgba(255, 215, 0, 0)    10%,
-                  rgba(255, 215, 0, 0)    90%,
-                  rgba(255, 215, 0, 0.45) 96%,
-                  rgba(255, 245, 200, 1)  100%
-                );
-                -webkit-mask:
-                  linear-gradient(#000 0 0) content-box,
-                  linear-gradient(#000 0 0);
-                -webkit-mask-composite: xor;
-                        mask-composite: exclude;
-                pointer-events: none;
-                filter: drop-shadow(0 0 8px rgba(255, 215, 0, 0.7));
-                z-index: 0;
-                animation: neonCycleSearch 5s linear infinite;
+              .neon-gold-border.neon-cycle-select {
+                /* Destination select = gold, half-cycle out of phase */
+                box-shadow:
+                  0 0 0 1.5px rgba(230, 161, 58, 0.45),
+                  0 0 4px rgba(230, 161, 58, 0.12);
+                animation: goldBreathe 3.5s ease-in-out 1.75s infinite;
               }
-              .neon-gold-border.neon-cycle-select::before {
-                animation: neonCycleSelect 5s linear infinite;
+              .neon-gold-border:focus-within {
+                animation: none;
+                box-shadow:
+                  0 0 0 1.5px rgba(0, 230, 255, 0.95),
+                  0 0 18px rgba(0, 198, 255, 0.55);
               }
-              /* Highlight the chevron arrow inside the select trigger so the
-                 destination dropdown is visually clear. */
+              .neon-gold-border.neon-cycle-select:focus-within {
+                box-shadow:
+                  0 0 0 1.5px rgba(255, 215, 0, 0.95),
+                  0 0 18px rgba(255, 215, 0, 0.55);
+              }
+              /* Highlight the chevron arrow inside the destination select
+                 in gold (matches its accent). */
               .neon-gold-border [data-slot="select-trigger"] > svg:last-of-type {
                 color: #E6A13A !important;
                 opacity: 1 !important;
                 width: 1.25rem !important;
                 height: 1.25rem !important;
                 stroke-width: 2.75 !important;
-                filter: drop-shadow(0 0 5px rgba(230, 161, 58, 0.65));
               }
             `}</style>
             {/* Quick Search */}
@@ -3767,8 +3760,10 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
               </div>
               )}
 
-              {/* TO Input */}
-              <div>
+              {/* TO Input — extra top margin to give breathing room from
+                  the search bar above (otherwise the cyan + gold pulses
+                  visually crowd each other). */}
+              <div style={{ marginTop: 'clamp(1rem, 1.6vh, 1.5rem)' }}>
                 <label className="flex items-center gap-2 mb-2">
                   <div className="w-5 h-5 rounded-full bg-gradient-to-r from-[#0075FF] to-[#00C6FF] flex items-center justify-center shadow-lg">
                     <MapPin size={12} className="text-white" />
@@ -3929,8 +3924,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                   background: darkMode
                     ? 'linear-gradient(135deg, rgba(239, 68, 68, 0.16) 0%, rgba(239, 68, 68, 0.06) 100%)'
                     : 'linear-gradient(135deg, rgba(239, 68, 68, 0.14) 0%, rgba(239, 68, 68, 0.05) 100%)',
-                  backdropFilter: 'blur(22px) saturate(160%)',
-                  WebkitBackdropFilter: 'blur(22px) saturate(160%)',
+                  backdropFilter: 'blur(10px) saturate(140%)',
+                  WebkitBackdropFilter: 'blur(10px) saturate(140%)',
                   border: darkMode
                     ? '1px solid rgba(239, 68, 68, 0.35)'
                     : '1px solid rgba(239, 68, 68, 0.40)',
@@ -4562,8 +4557,8 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                 background: darkMode
                   ? 'rgba(10, 14, 35, 0.55)'
                   : 'rgba(255, 255, 255, 0.55)',
-                backdropFilter: 'blur(20px) saturate(140%)',
-                WebkitBackdropFilter: 'blur(20px) saturate(140%)',
+                backdropFilter: 'blur(10px) saturate(130%)',
+                WebkitBackdropFilter: 'blur(10px) saturate(130%)',
                 border: darkMode
                   ? '1px solid rgba(255, 255, 255, 0.12)'
                   : '1px solid rgba(0, 28, 56, 0.10)',
@@ -6960,116 +6955,12 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                         })}
                       </div>
 
-                      {/* Idle attention effects — only when dial is closed
-                          AND no filter is active. Two pulsing gold rings,
-                          orbiting sparkle dots, and a gentle breathing
-                          scale on the hub itself signal "tap me" without
-                          dominating the panel. */}
-                      {!quickAccessDialOpen && !activeCat && (
-                        <>
-                          <style>{`
-                            @keyframes qaIdlePulseRing {
-                              0%   { opacity: 0.65; transform: translate(-50%, -50%) scale(0.78); }
-                              80%  { opacity: 0;    transform: translate(-50%, -50%) scale(1.55); }
-                              100% { opacity: 0;    transform: translate(-50%, -50%) scale(1.55); }
-                            }
-                            @keyframes qaIdleHubBreathe {
-                              0%, 100% { transform: translate(-50%, -50%) scale(1.05); }
-                              50%      { transform: translate(-50%, -50%) scale(1.12); }
-                            }
-                            @keyframes qaIdleSparkleOrbit {
-                              from { transform: translate(-50%, -50%) rotate(0deg); }
-                              to   { transform: translate(-50%, -50%) rotate(360deg); }
-                            }
-                            @keyframes qaIdleSparkleTwinkle {
-                              0%, 100% { opacity: 0.25; transform: scale(0.6); }
-                              50%      { opacity: 1;    transform: scale(1.2); }
-                            }
-                            @keyframes qaIdleHaloGlow {
-                              0%, 100% { box-shadow: 0 0 22px rgba(230,161,58,0.30), 0 0 0 0 rgba(255,215,0,0); }
-                              50%      { box-shadow: 0 0 38px rgba(230,161,58,0.65), 0 0 0 6px rgba(255,215,0,0.18); }
-                            }
-                          `}</style>
-                          {/* Pulse rings (two staggered) */}
-                          <span
-                            aria-hidden
-                            style={{
-                              position: 'absolute',
-                              top: '50%',
-                              left: '50%',
-                              width: 108,
-                              height: 108,
-                              marginTop: 0,
-                              marginLeft: 0,
-                              borderRadius: '50%',
-                              border: '2px solid rgba(230, 161, 58, 0.7)',
-                              animation: 'qaIdlePulseRing 2.4s ease-out infinite',
-                              pointerEvents: 'none',
-                              zIndex: 2,
-                              filter: 'drop-shadow(0 0 6px rgba(230,161,58,0.55))',
-                            }}
-                          />
-                          <span
-                            aria-hidden
-                            style={{
-                              position: 'absolute',
-                              top: '50%',
-                              left: '50%',
-                              width: 108,
-                              height: 108,
-                              borderRadius: '50%',
-                              border: '2px solid rgba(255, 215, 0, 0.55)',
-                              animation: 'qaIdlePulseRing 2.4s ease-out 1.2s infinite',
-                              pointerEvents: 'none',
-                              zIndex: 2,
-                              filter: 'drop-shadow(0 0 4px rgba(255,215,0,0.45))',
-                            }}
-                          />
-                          {/* Orbiting sparkles — 4 tiny dots circling the hub */}
-                          <div
-                            aria-hidden
-                            style={{
-                              position: 'absolute',
-                              top: '50%',
-                              left: '50%',
-                              width: 140,
-                              height: 140,
-                              marginTop: 0,
-                              marginLeft: 0,
-                              animation: 'qaIdleSparkleOrbit 6s linear infinite',
-                              pointerEvents: 'none',
-                              zIndex: 4,
-                              transformOrigin: '0 0',
-                            }}
-                          >
-                            {[0, 90, 180, 270].map((deg, i) => (
-                              <span
-                                key={deg}
-                                style={{
-                                  position: 'absolute',
-                                  top: 0,
-                                  left: 0,
-                                  width: 6,
-                                  height: 6,
-                                  marginTop: -3,
-                                  marginLeft: -3,
-                                  borderRadius: 999,
-                                  background:
-                                    i % 2 === 0
-                                      ? 'rgba(255, 215, 0, 0.95)'
-                                      : 'rgba(255, 245, 200, 0.85)',
-                                  boxShadow:
-                                    i % 2 === 0
-                                      ? '0 0 8px rgba(255, 215, 0, 0.85)'
-                                      : '0 0 6px rgba(255, 245, 200, 0.7)',
-                                  transform: `rotate(${deg}deg) translateY(-70px)`,
-                                  animation: `qaIdleSparkleTwinkle 1.8s ease-in-out ${i * 0.45}s infinite`,
-                                }}
-                              />
-                            ))}
-                          </div>
-                        </>
-                      )}
+                      {/* Idle attention effects intentionally removed —
+                          they were the heaviest GPU draw on weaker kiosk
+                          hardware (5 infinite animations + drop-shadows
+                          stacking with the hub's backdrop-filter). The
+                          gold-glass hub is bright enough on its own to
+                          read as "tap me". */}
 
                       {/* Center hub — click to expand/collapse the dial.
                           When dial is closed and no filter is active, this
@@ -7100,18 +6991,18 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                             : darkMode
                               ? 'linear-gradient(135deg, rgba(255, 215, 0, 0.20) 0%, rgba(255,255,255,0.04) 50%, rgba(230, 161, 58, 0.14) 100%)'
                               : 'linear-gradient(135deg, rgba(255, 215, 0, 0.30) 0%, rgba(255,255,255,0.55) 50%, rgba(230, 161, 58, 0.16) 100%)',
-                          backdropFilter: 'blur(28px) saturate(180%)',
-                          WebkitBackdropFilter: 'blur(28px) saturate(180%)',
+                          backdropFilter: 'blur(12px) saturate(160%)',
+                          WebkitBackdropFilter: 'blur(12px) saturate(160%)',
                           border: activeCat
                             ? `1.5px solid ${activeCat.color}99`
                             : darkMode
                               ? '1.5px solid rgba(230, 161, 58, 0.55)'
                               : '1.5px solid rgba(230, 161, 58, 0.65)',
                           boxShadow: activeCat
-                            ? `0 0 28px ${activeCat.color}55, 0 10px 28px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.45), inset 0 -2px 6px rgba(0,0,0,0.16)`
+                            ? `0 0 12px ${activeCat.color}55, 0 6px 14px rgba(0,0,0,0.22), inset 0 1px 0 rgba(255,255,255,0.45)`
                             : darkMode
-                              ? '0 10px 28px rgba(0, 0, 0, 0.32), 0 0 22px rgba(230,161,58,0.32), inset 0 1px 0 rgba(255,255,255,0.20), inset 0 -2px 6px rgba(0,0,0,0.18)'
-                              : '0 10px 28px rgba(230,161,58,0.28), 0 0 18px rgba(230,161,58,0.22), inset 0 1px 0 rgba(255,255,255,0.85), inset 0 -1px 3px rgba(230,161,58,0.10)',
+                              ? '0 6px 14px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255,255,255,0.20)'
+                              : '0 6px 14px rgba(230,161,58,0.22), inset 0 1px 0 rgba(255,255,255,0.85)',
                           display: 'flex',
                           flexDirection: 'column',
                           alignItems: 'center',
@@ -7124,13 +7015,6 @@ const [collapsedRouteGroups, setCollapsedRouteGroups] = useState<Set<string>>(ne
                           overflow: 'hidden',
                           transition:
                             'transform 0.5s cubic-bezier(0.34, 1.5, 0.5, 1), border-color 0.4s ease, box-shadow 0.4s ease, background 0.4s ease',
-                          // Idle attention animations: breathe + subtle gold
-                          // halo pulse only when the dial is closed and no
-                          // filter is active. Stops once the user engages.
-                          animation:
-                            !quickAccessDialOpen && !activeCat
-                              ? 'qaIdleHubBreathe 2.6s ease-in-out infinite, qaIdleHaloGlow 2.6s ease-in-out infinite'
-                              : undefined,
                         }}
                         onMouseEnter={(e) => {
                           if (!quickAccessDialOpen) {
